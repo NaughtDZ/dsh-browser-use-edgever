@@ -21,7 +21,7 @@
 
 请不要在公开 Issue、Pull Request、日志或示例中披露漏洞细节、凭据、Cookie、页面数据或可用攻击代码。
 
-请使用 GitHub 的 [Report a vulnerability](https://github.com/dengpeihua/dsh-browser/security/advisories/new) 私密报告入口。不要通过公开 Issue 或 Pull Request 发送漏洞细节。
+请使用 GitHub 的 [Report a vulnerability](https://github.com/dengpeihua/dsh-browser-use/security/advisories/new) 私密报告入口。不要通过公开 Issue 或 Pull Request 发送漏洞细节。
 
 报告应包含：
 
@@ -95,7 +95,7 @@ We maintain only the latest release in the `0.1.x` development line. Before the 
 
 Do not disclose vulnerability details, credentials, cookies, page data, or working exploit code in a public Issue, Pull Request, log, or example.
 
-Use GitHub's private [Report a vulnerability](https://github.com/dengpeihua/dsh-browser/security/advisories/new) form. Do not send vulnerability details through a public Issue or Pull Request.
+Use GitHub's private [Report a vulnerability](https://github.com/dengpeihua/dsh-browser-use/security/advisories/new) form. Do not send vulnerability details through a public Issue or Pull Request.
 
 A useful report includes:
 

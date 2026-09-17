@@ -64,11 +64,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dengpeihua/dsh-browser.git"
+    "url": "git+https://github.com/dengpeihua/dsh-browser-use.git"
   },
-  "homepage": "https://github.com/dengpeihua/dsh-browser#readme",
+  "homepage": "https://github.com/dengpeihua/dsh-browser-use#readme",
   "bugs": {
-    "url": "https://github.com/dengpeihua/dsh-browser/issues"
+    "url": "https://github.com/dengpeihua/dsh-browser-use/issues"
   },
   "dependencies": {
     "puppeteer-core": "25.5.0"

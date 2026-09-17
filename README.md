@@ -1,6 +1,6 @@
 ![dsh-browser — Native browser agent for DeepSeek Harness](assets/dsh-browser-banner-v3.png)
 
-<h1 align="center">dsh-browser-plugin</h1>
+<h1 align="center">dsh-browser-use</h1>
 
 <p align="center">Native Chromium browser Agent tools for DeepSeek Harness</p>
 
@@ -21,7 +21,7 @@ WebVoyager 109 tasks / 3 站点：成功率 88.1%（AllRecipes 88.6%、Apple 85.
 
 <a id="中文"></a>
 
-# 🇨🇳 dsh-browser-plugin（中文）
+# 🇨🇳 dsh-browser-use（中文）
 
 > 给 DeepSeek Harness 装上真实浏览器：让 Agent 能够打开网页、理解页面、填写表单、管理标签页并完成多步骤任务。
 
@@ -373,7 +373,7 @@ Remove-Item Env:DSH_TEST_SESSION_MODULE
 
 <a id="english"></a>
 
-# 🇬🇧 dsh-browser-plugin (English)
+# 🇬🇧 dsh-browser-use (English)
 
 > Give DeepSeek Harness a real browser so an Agent can open pages, understand interfaces, fill forms, manage tabs, and complete multi-step tasks.
 
