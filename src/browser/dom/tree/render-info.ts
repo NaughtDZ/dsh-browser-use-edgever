@@ -1,30 +1,29 @@
 /**
- * Render-metadata computation for enhanced DOM trees.
+ * Render Info Calculator
  *
- * The pipeline initializes visibility, interactivity, fillability, and scroll
- * ownership; performs frame-aware elementFromPoint checks; marks candidates and
- * overlays; collects click-listener signatures; and demotes duplicate listener
- * descendants. It mutates each node's renderInfo and does not allocate the
- * model-facing element index.
+ * Computes render information directly on EnhancedDOMTreeNode.
+ * Uses DOM.getNodeForLocation to check if elements are visible at their position.
  */
 
-import { type EnhancedDOMTreeNode, NodeType } from '../types/dom-node';
-import { ClickableElementDetector } from './clickable-detector';
-import { checkElementVisibility, type ParentFrameState } from './visibility';
-import type { CDPClient } from '../../cdp/client';
-import type { OOPIFManager } from '../../cdp/oopif-manager';
+import { type EnhancedDOMTreeNode, NodeType } from '../types/dom-node.js';
+import { ClickableElementDetector } from './clickable-detector.js';
+import { checkElementVisibility, type ParentFrameState } from './visibility.js';
+import { fetchAxForUsedNodes } from './ax-fetch.js';
+import { HIGHLIGHT_CONTAINER_ID } from '../tool-markers.js';
+import type { CDPClient } from '../../cdp/client.js';
+import type { OOPIFManager } from '../../cdp/oopif-manager.js';
 
-/** Optional parameter for computeRenderInfo() */
+/**
+ * Options for computeRenderInfo
+ */
 export interface ComputeRenderInfoOptions {
-  /**
-   * An extension of the visible range in “pages”; 1 indicates an extension of one view height up and down, and of one view width up and down.
-   * is used to identify elements close to the current view that have not yet been shown.
-   */
+  /** Expand viewport range in pages (1 = one viewport height/width) for marking elements outside visible area */
   expand?: number;
+  fullAX?: boolean;
 }
 
 /**
- * Calculates the rendering information of the whole tree DOM in five fixed phases, all results written in situ at renderInfo at node.
+ * Compute render info for DOM tree
  */
 export async function computeRenderInfo(
   root: EnhancedDOMTreeNode,
@@ -34,21 +33,25 @@ export async function computeRenderInfo(
 ): Promise<void> {
   const expand = options?.expand;
 
-  // Step 1 : Initialize all nodes and calculate expandedViewportPosition through a visible check.
+  // Step 1: Initialize renderInfo on all nodes (also computes expandedViewportPosition via visibility check)
   initRenderInfo(root, undefined, [], expand);
 
-  // Step 2 : Determines whether the visible nodes are at the interactive caller through the result of the central node of the browser.
+  // Step 2: Check top elements using DOM.getNodeForLocation
   await checkTopElements(root, cdpClient, oopifManager);
 
-  // Step 3 : Combining interactive, top-cut, extended view and hidden original control rule tags for candidate nodes.
+  // Step 3: Mark interactive top elements as candidates
   markInteractiveCandidates(root);
 
-  // Step 4 : Also send the original and frame click of the candidate.
+  // Step 4: Fetch click listener signatures for all candidate nodes
   await fetchClickListenerSignatures(root, cdpClient, oopifManager);
 
-  // Step 5 : Compare the target targets and the listener signatures of the ancestors and descendants and mark the repeat listening nodes.
+  // Step 5: Mark descendant candidates as isDuplicateListener if they share listener signatures with an ancestor
   deduplicateByListeners(root);
+
+  // Step 6: Fetch accessible names, now that we know which nodes can use them
+  if (!options?.fullAX) await fetchAxForUsedNodes(root, cdpClient, oopifManager);
 }
+
 
 const SCROLLABLE_OVERFLOW_VALUES = new Set([
   'auto',
@@ -57,7 +60,6 @@ const SCROLLABLE_OVERFLOW_VALUES = new Set([
   'hidden',
 ]);
 const OVERLAY_COVERAGE_THRESHOLD = 0.75;
-const HIGHLIGHT_CONTAINER_ID = '__elements_highlight_container__';
 const COMMON_CONTAINER_TAGS = new Set([
   'div',
   'main',
@@ -74,10 +76,6 @@ interface ViewportSize {
   height: number;
 }
 
-/**
- * Walking through plain subtrees, Shadow DOM and iframe documents, using the largest area of HTML node clientRects as the main viewer.
- * Choosing the largest viewport rather than the first HTML node avoids treating a smaller iframe document as the top-level viewport.
- */
 function getMainViewportSize(root: EnhancedDOMTreeNode): ViewportSize | null {
   let bestArea = 0;
   let viewport: ViewportSize | null = null;
@@ -116,7 +114,6 @@ function getViewportCoverageRatio(
   bounds: { x: number; y: number; width: number; height: number },
   viewport: ViewportSize,
 ): number {
-  // The elements rectangular shall be reduced to [0, viewport.width] x [0, viewport.height] and the intersection shall be divided by the area of view.
   const overlapLeft = Math.max(0, bounds.x);
   const overlapTop = Math.max(0, bounds.y);
   const overlapRight = Math.min(viewport.width, bounds.x + bounds.width);
@@ -129,10 +126,6 @@ function getViewportCoverageRatio(
   return viewportArea > 0 ? overlapArea / viewportArea : 0;
 }
 
-/**
- * Special reservation only for originals select, checkbox, radio who are frequently replaced by the assembly library: when opacity0 or any dimension 0
- * returns true at this time. visibility.ts allows such controls to continue to participate in semantics and candidate judgement, rather than to hide directly by normal zero-sized elements.
- */
 function isVisuallyHiddenNativeControl(node: EnhancedDOMTreeNode): boolean {
   if (node.nodeType !== NodeType.ELEMENT_NODE) {
     return false;
@@ -140,7 +133,8 @@ function isVisuallyHiddenNativeControl(node: EnhancedDOMTreeNode): boolean {
 
   const tag = node.nodeName.toLowerCase();
 
-  // The UI assembly library often sets the original select to opacity:0 or zero dimensions, and then draws a custom drop box at Shadow DOM in the upstream caller.
+  // Native <select> elements are often hidden (opacity:0 / zero-size) by UI
+  // libraries that render a custom dropdown via Shadow DOM on top.
   const isHiddenSelect = tag === 'select';
 
   const isHiddenCheckboxRadio =
@@ -163,16 +157,16 @@ function isVisuallyHiddenNativeControl(node: EnhancedDOMTreeNode): boolean {
 }
 
 /**
- * Determines whether the node is an independent scrolling container.
- *
- * Order of calculation: Compare scrollRects with clientRects first; content width or height must be at least 1px, 1px is floater Enter
- * Portability. Check then whether overflow in the corresponding direction allows scscrolling. When styles are missing, only the common container labels are used in a conservative loop.
+ * Check if a node is a scrollable container.
+ * Compares scrollRects vs clientRects (+1 tolerance for float rounding),
+ * then validates CSS overflow allows scrolling.
  */
 function checkIsScrollable(
   node: EnhancedDOMTreeNode,
   htmlFrames: EnhancedDOMTreeNode[],
 ): boolean {
-  // Scscrolling on top HTML/BODY belongs to the main page (container 0), without a scrolling container; HTML/BODY in iframe allows independent scscrolling.
+  // Top-frame HTML/BODY scrolling is the main page scroll (container 0), not a separate container.
+  // Iframe HTML/BODY may be genuine scroll containers.
   const tag = node.nodeName.toLowerCase();
   const isInIframe = htmlFrames.some(
     f => f.nodeName === 'IFRAME' || f.nodeName === 'FRAME',
@@ -205,7 +199,8 @@ function checkIsScrollable(
 }
 
 /**
- * Finds the first scrollable node in Shadow DOM and transfers it backendNodeId to the subnode Light DOM projected via slot.
+ * Find the first scrollable container inside shadow roots.
+ * Used to propagate scrollableContainerId to slotted light DOM children.
  */
 function findShadowScrollContainer(
   shadowRoots: EnhancedDOMTreeNode[],
@@ -229,16 +224,8 @@ function findFirstScrollable(node: EnhancedDOMTreeNode): number | undefined {
 }
 
 /**
- * Phase 1 initializes renderInfo across the tree and calculates isVisible and expandedViewportPosition from frame-aware visibility.
- *
- * Order of execution of single nodes:
- * Identification of Shadow host and iframe host.
- * 2. ClickableElementDetector judge interactive/fill capacity based on labels, properties, ARIA, cursor and Snapshot.
- * 3. Identify primary controls that are visually hidden by the assembly library and calculate whether the current node forms a new scrolling container.
- * 4. checkElementVisibility() Combine CSS, size, recent scscrolling view, frame fatherhood and expand range to calculate visibility.
- * 5. Write the results into renderInfo; the new scrolling container ID is passed to descendants, while the current node records the parent scrolling container ID.
- * 6. Recursed Shadow DOM to locate the scrolling container, then returned to the normal sub-node that may be projected by slot, and finally returned
- * iframe contentDocument, passing the iframe's visible, directional, or hidden state into the subdocument.
+ * Initialize renderInfo on all nodes in the tree.
+ * Also computes expandedViewportPosition using frame-aware visibility check.
  */
 function initRenderInfo(
   node: EnhancedDOMTreeNode,
@@ -247,12 +234,12 @@ function initRenderInfo(
   expand?: number,
   parentFrameState: ParentFrameState = 'visible',
 ): void {
-  // First recognizes whether the current node carries a sub-document Shadow DOM or iframe.
+  // Check for shadow host
   const shadowRoots = node.shadowRoots ?? [];
   const isShadowHost = shadowRoots.length > 0;
   const isIframeHost = node.contentDocument !== undefined;
 
-  // Interactivity and refillability are independently judged before visibility; the subsequent candidacy is combined with the top-life median.
+  // Check if element is interactive
   const isInteractive = ClickableElementDetector.isInteractive(node);
   const isFill = ClickableElementDetector.isFillable(node);
   node.renderInfo.isVisuallyHiddenNativeControl =
@@ -261,7 +248,7 @@ function initRenderInfo(
   const isScrollable = checkIsScrollable(node, htmlFrames);
   const scrollableId = isScrollable ? node.backendNodeId : parentScrollableId;
 
-  // Calculates frame/scrolling container perception of visibility in the same absolute system and the direction of extended view.
+  // Frame-aware visibility + expanded viewport position
   const visResult = checkElementVisibility(
     node,
     htmlFrames,
@@ -269,7 +256,7 @@ function initRenderInfo(
     parentFrameState,
   );
 
-  // Update the current node in situ; isTopElement will be recalculated at 2, so reset here to false.
+  // Update renderInfo
   node.renderInfo.isVisible = visResult.isVisible;
   node.renderInfo.isInteractive = isInteractive;
   node.renderInfo.isTopElement = false;
@@ -281,26 +268,21 @@ function initRenderInfo(
   node.renderInfo.isIframeHost = isIframeHost;
   node.renderInfo.isFill = isFill;
 
-  // The iframe/frame element and the HTML root with frameId are recorded for descendants for subsequent local viewing.
-  const updatedFrames = [...htmlFrames];
-  if (
-    node.nodeType === NodeType.ELEMENT_NODE &&
-    (node.nodeName.toUpperCase() === 'IFRAME' ||
-      node.nodeName.toUpperCase() === 'FRAME')
-  ) {
-    updatedFrames.push(node);
-  }
-  if (
+  // Track HTML frames for children. Only frame nodes extend the list, so the
+  // copy is made when one is found rather than at every node.
+  const upper =
+    node.nodeType === NodeType.ELEMENT_NODE ? node.nodeName.toUpperCase() : '';
+  const isFrameElement = upper === 'IFRAME' || upper === 'FRAME';
+  const isFrameHtml =
     node.nodeType === NodeType.ELEMENT_NODE &&
     node.nodeName === 'HTML' &&
-    node.frameId
-  ) {
-    updatedFrames.push(node);
-  }
+    !!node.frameId;
+  const updatedFrames =
+    isFrameElement || isFrameHtml ? [...htmlFrames, node] : htmlFrames;
 
-  // Recursive order starts with Shadow Root in order to first find the scrolling container.
-  // Handle first Shadow Root and find its internal scrolling container so that the child node Light DOM projected by slot succeeds correctly ID.
-  // For example, ion-content may place Light DOM into a Shadow DOM `<main><slot /></main>`.
+  // Process shadow roots first — discover scrollable containers inside them
+  // so slotted light DOM children inherit the correct scrollableContainerId.
+  // (e.g. Ionic's ion-content has <main class="inner-scroll"><slot/></main> in shadow DOM)
   for (const shadowRoot of shadowRoots) {
     initRenderInfo(
       shadowRoot,
@@ -311,7 +293,8 @@ function initRenderInfo(
     );
   }
 
-  // After returning from a shadow root, expose its nearest scroll container to subsequent regular children.
+  // For shadow hosts, find the first scrollable container inside shadow roots
+  // to use as scrollableId for slotted light DOM children
   let childScrollableId = scrollableId;
   if (isShadowHost) {
     const shadowScrollId = findShadowScrollContainer(shadowRoots);
@@ -320,7 +303,7 @@ function initRenderInfo(
     }
   }
 
-  // Reprocess Light DOM subnodes; they may be physically displayed in a scrolling container Shadow DOM by slot.
+  // Process children (light DOM — may be slotted into shadow root's scroll container)
   const children = node.childrenNodes ?? [];
   for (const child of children) {
     initRenderInfo(
@@ -332,11 +315,12 @@ function initRenderInfo(
     );
   }
 
-  // Final processing of iframe sub-document: Calculating the host's own state and spreading it to contentDocument.
+  // Process content document (iframes)
+  // Compute iframe's own visibility state and propagate to children
   if (node.contentDocument) {
     let iframeState: ParentFrameState = parentFrameState;
     if (parentFrameState === 'visible') {
-      // The parent frame continues to calculate the sub-document status based on the host 's position on the parent page when it is visible.
+      // iframe visible in parent → compute its own state for children
       const iframeVis = checkElementVisibility(node, htmlFrames, expand);
       if (iframeVis.isVisible) {
         iframeState = 'visible';
@@ -346,7 +330,7 @@ function initRenderInfo(
         iframeState = 'hidden';
       }
     }
-    // When the parent frame is already in an extended direction or is completely hidden, the sub-document is directly inherited and is no longer subject to local error to the top.
+    // parentFrameState is expand/hidden → children inherit it directly
     initRenderInfo(
       node.contentDocument,
       scrollableId,
@@ -358,11 +342,10 @@ function initRenderInfo(
 }
 
 /**
- * Up to CDP trace through CDP at most when the centre node is not in the enhanced tree (e.g. unrecorded Shadow DOM internal node or pseudo elements)
- * maxDepth Layer. If the target itself or the target is associated with the frame ancestors on the way, indicate that the hit node is still relevant to the target; CDP query failed,
- * At root node or beyond depth is treated as irrelevant.
+ * Walk up hit node's parent chain via CDP to check if it's related to the target.
+ * Needed when hit node is not in our tree (e.g., shadow DOM internals, pseudo-elements).
  */
-async function checkHitNodeParentChain(
+export async function checkHitNodeParentChain(
   sendCmd: <T>(method: string, params?: Record<string, unknown>) => Promise<T>,
   hitBackendNodeId: number,
   targetBackendNodeId: number,
@@ -413,51 +396,56 @@ async function checkHitNodeParentChain(
 }
 
 /**
- * Run document.elementFromPoint(x, y) in the target CDP session and convert the returned remote object to
- * nodeId and steady backendNodeId. Remote objects are released as far as possible after conversion; returns undefined when the page fails to hit the element.
+ * Run elementFromPoint via Runtime.evaluate, resolve to backendNodeId.
  */
 export async function elementFromPoint(
   sendCmd: <T>(method: string, params?: Record<string, unknown>) => Promise<T>,
   centerX: number,
   centerY: number,
 ): Promise<number | undefined> {
-  const evalResult = await sendCmd<{
-    result: { objectId?: string; subtype?: string };
-  }>('Runtime.evaluate', {
-    expression: `document.elementFromPoint(${centerX}, ${centerY})`,
-    returnByValue: false,
-  });
+  // One round trip. Resolving the same point through
+  // document.elementFromPoint costs four (evaluate -> requestNode ->
+  // releaseObject -> describeNode) and this runs once per visible node, so it
+  // used to dominate live extraction time.
+  //
+  // It hit-tests the page rather than a document, so it pierces into child
+  // frames and can land on a ::before/::after pseudo-element; checkTopElements
+  // maps those back to the element that owns them.
+  const hit = await sendCmd<{ backendNodeId?: number }>(
+    'DOM.getNodeForLocation',
+    { x: centerX, y: centerY },
+  ).catch(() => undefined);
 
-  if (!evalResult.result.objectId || evalResult.result.subtype === 'null') {
-    return undefined;
-  }
-
-  const domNode = await sendCmd<{ nodeId: number }>('DOM.requestNode', {
-    objectId: evalResult.result.objectId,
-  });
-
-  await sendCmd('Runtime.releaseObject', {
-    objectId: evalResult.result.objectId,
-  }).catch(() => {});
-
-  const describeResult = await sendCmd<{
-    node: { backendNodeId: number };
-  }>('DOM.describeNode', { nodeId: domNode.nodeId, depth: 0 });
-
-  return describeResult.node.backendNodeId;
+  return hit?.backendNodeId;
 }
 
 /**
- * Phase 2: use a central point hit test to determine whether visible nodes are shielded by unrelated elements.
- *
- * Order of calculation:
- * Traverse regular children, Shadow Roots, and iframe subdocuments, collect only isVisible=true nodes, and create a
- * backendNodeId - Queries for nodes.
- * 2. Collect ancestor IDs that belong to the same OOPIF session; stop at session boundaries to avoid mixing CDP contexts.
- * 3. The normal node uses the coordinates of the centre of the top viewport absolutePosition and the local coordinates of Snapshot bounds for the OOPIF node,
- * and send the command to the corresponding OOPIF session.
- * 4. Mark isTopElement when elementFromPoint hits the target itself, an ancestor, or a descendant.
- * checkHitNodeParentChain performs the relationship check. Missing coordinates, misses, and CDP errors produce false.
+ * Scroll offset of the main frame's document, as the builder subtracted it when
+ * turning snapshot bounds into viewport-relative absolutePosition.
+ */
+function findMainFrameScroll(root: EnhancedDOMTreeNode): { x: number; y: number } {
+  let found: { x: number; y: number } | null = null;
+
+  const visit = (node: EnhancedDOMTreeNode): void => {
+    if (found) return;
+    // Stop at frame boundaries: only the top document's scroll applies here
+    if (node.contentDocument) return;
+    if (node.nodeName === 'HTML' && node.frameId && node.snapshotNode?.scrollRects) {
+      found = {
+        x: node.snapshotNode.scrollRects.x,
+        y: node.snapshotNode.scrollRects.y,
+      };
+      return;
+    }
+    for (const child of node.childrenNodes ?? []) visit(child);
+  };
+
+  visit(root);
+  return found ?? { x: 0, y: 0 };
+}
+
+/**
+ * Check if elements are top-level (not occluded) using elementFromPoint.
  */
 async function checkTopElements(
   root: EnhancedDOMTreeNode,
@@ -467,10 +455,18 @@ async function checkTopElements(
   const nodesToCheck: EnhancedDOMTreeNode[] = [];
   const nodeByBackendId = new Map<number, EnhancedDOMTreeNode>();
 
+  // A hit can land on a ::before/::after pseudo-element, which has no tree node
+  // and whose DOM.describeNode carries no parentId — so it has to be resolved
+  // to its owning element here, from data the DOM tree already carries.
+  const pseudoToHost = new Map<number, number>();
+
   const collectNodes = (node: EnhancedDOMTreeNode) => {
     if (node.renderInfo.isVisible) {
       nodesToCheck.push(node);
       nodeByBackendId.set(node.backendNodeId, node);
+    }
+    for (const pseudoId of node.pseudoElementIds ?? []) {
+      pseudoToHost.set(pseudoId, node.backendNodeId);
     }
     for (const child of node.childrenNodes ?? []) {
       collectNodes(child);
@@ -486,7 +482,15 @@ async function checkTopElements(
 
   if (nodesToCheck.length === 0) return;
 
-  // Builds a collection of ancestors in the same CDP session; stops at iframe/OOPIF session borders.
+  // DOM.getNodeForLocation hit-tests in document coordinates, while
+  // absolutePosition is relative to the viewport (the builder subtracts the
+  // main frame's scroll offset). Without adding it back, every probe on a
+  // scrolled page lands outside the document and comes back "No node found at
+  // given location" — which reads as "nothing is a top element" and empties
+  // the extraction of every interactive element.
+  const mainScroll = findMainFrameScroll(root);
+
+  // Build ancestor lookup within the same frame (stop at iframe/OOPIF boundary)
   const getAncestorBackendIds = (node: EnhancedDOMTreeNode): Set<number> => {
     const ancestors = new Set<number>();
     const sessionId = node.oopifSessionId;
@@ -500,18 +504,18 @@ async function checkTopElements(
   };
 
   const checkPromises = nodesToCheck.map(async node => {
-    // absolutePosition is the coordinates of the top-level viewport and has been superimposed iframe offset; if missing, back Snapshot bounds.
+    // absolutePosition = viewport coords for main frame, includes frame offset for iframes
     const pos = node.absolutePosition ?? node.snapshotNode?.bounds;
     if (!pos) {
       node.renderInfo.isTopElement = false;
       return;
     }
-    const centerX = Math.round(pos.x + pos.width / 2);
-    const centerY = Math.round(pos.y + pos.height / 2);
+    const centerX = Math.round(pos.x + pos.width / 2 + mainScroll.x);
+    const centerY = Math.round(pos.y + pos.height / 2 + mainScroll.y);
 
     const ancestors = getAncestorBackendIds(node);
 
-    // Select the main CDPClient or OOPIF according to the node attribution for session exclusive.
+    // Build sendCmd for the appropriate session
     const sendCmd =
       node.oopifSessionId && oopifManager
         ? <T>(method: string, params?: Record<string, unknown>) =>
@@ -520,7 +524,7 @@ async function checkTopElements(
             cdpClient.sendCommand<T>(method, params);
 
     try {
-      // elementFromPoint() in OOPIF session only recognizes the local coordinates of the subpages and therefore cannot be called absolutePosition.
+      // For OOPIF nodes, use local coords within their session
       let hitBackendNodeId: number | undefined;
       if (node.oopifSessionId && oopifManager) {
         const localBounds = node.snapshotNode?.bounds;
@@ -540,6 +544,8 @@ async function checkTopElements(
         return;
       }
 
+      hitBackendNodeId = pseudoToHost.get(hitBackendNodeId) ?? hitBackendNodeId;
+
       node.renderInfo.hitBackendNodeId = hitBackendNodeId;
 
       if (hitBackendNodeId === node.backendNodeId) {
@@ -552,7 +558,7 @@ async function checkTopElements(
         return;
       }
 
-      // Descendants of hit targets (e.g. span in buttons) also indicate that the focus of the target is not overshadowed by irrelevant elements.
+      // Check if hit node is a descendant of self
       const hitNode = nodeByBackendId.get(hitBackendNodeId);
       if (hitNode) {
         const hitAncestors = getAncestorBackendIds(hitNode);
@@ -561,7 +567,7 @@ async function checkTopElements(
           return;
         }
       } else {
-        // When the hit node is unenhanced (often within Shadow DOM), replace the CDP parent-recognition relationship.
+        // Hit node not in our tree (e.g., shadow DOM internals)
         const isRelated = await checkHitNodeParentChain(
           sendCmd,
           hitBackendNodeId,
@@ -585,16 +591,8 @@ async function checkTopElements(
 }
 
 /**
- * Stage 3: Mark candidate nodes for subsequent cropping, highlighting and serialization; elementIndex is not yet allocated.
- *
- * Order of calculation:
- * 1. Collect the currently visible element nodes and the extended visual nodes with expandedViewportPosition over and over again.
- * 2. The mask is only detected when there is an extended visual node: the candidate mask must be visible, fixed/absolute, allowed pointer-events,
- * Not HTML/BODY or the bright layer of this item, with at least 75 % coverage of the main view; the highest of paintOrder is isOverlay .
- * 3. If the extension node is drawn in less order than the mask, mark isBlockedByOverlay.
- * 4. An interactive node is a candidate if it meets any of the following conditions: the centre is at the top, within the extended view, or the semantic is still required
- * Visible but hidden original select/checkbox/radio control.
- * Candidates select will also be marked as descendants option/optgroup.
+ * Mark interactive top elements as candidates (no index assignment yet)
+ * For expanded viewport elements, only mark as candidate if not covered by overlay
  */
 function markInteractiveCandidates(root: EnhancedDOMTreeNode): void {
   const expandElements: EnhancedDOMTreeNode[] = [];
@@ -663,14 +661,14 @@ function markInteractiveCandidates(root: EnhancedDOMTreeNode): void {
           return false;
         }
 
-        // Only fixed or absolutely positioned elements can qualify as full-screen overlays here.
+        // Only fixed/absolute positioned elements can be overlays
         const styles = node.snapshotNode?.computedStyles;
         const position = styles?.['position'];
         if (position !== 'fixed' && position !== 'absolute') {
           return false;
         }
 
-        // pointer-events:none does not truncate interaction, and therefore is not considered a shield.
+        // pointer-events:none elements don't block interaction
         if (styles?.['pointer-events'] === 'none') {
           return false;
         }
@@ -697,7 +695,7 @@ function markInteractiveCandidates(root: EnhancedDOMTreeNode): void {
     }
   }
 
-  // The second pass combines overlay results with interaction and top-element checks to choose final candidates.
+  // Mark candidates
   const processNode = (node: EnhancedDOMTreeNode): void => {
     if (!node.renderInfo) return;
 
@@ -745,7 +743,9 @@ function markInteractiveCandidates(root: EnhancedDOMTreeNode): void {
 }
 
 /**
- * Creates a CDP command sender that binds the context of the current node: OOPIF takes its exclusive session and the main frame node CDPClient.
+ * Create a CDP command sender that routes to the correct session.
+ * For OOPIF nodes, commands go through the OOPIF session;
+ * for main-frame nodes, commands go through the main CDPClient.
  */
 function createSendCommand(
   node: EnhancedDOMTreeNode,
@@ -761,16 +761,9 @@ function createSendCommand(
     cdpClient.sendCommand<T>(method, params);
 }
 
-interface CDPEventListener {
-  type: string;
-  scriptId: string;
-  lineNumber: number;
-  columnNumber: number;
-}
-
 /**
- * The processor extraction function to be performed on the page: to check the current element and up to 50 layers of ancestors, covering React, Vue2/ 3, jQuery,
- * The inline onclick is covered by the back of the CDP primary event listening query.
+ * Extract click handlers from an element and its ancestor chain.
+ * Covers React, Vue 2/3, jQuery, and inline onclick.
  */
 const EXTRACT_ELEMENT_HANDLERS_JS = `
 function() {
@@ -828,10 +821,10 @@ function() {
     }
   }
 
-  // Current element itself
+  // 1. Self
   extractFromElement(this);
 
-  // 2. Walk the ancestor chain to find click handlers.
+  // 2. Walk ancestor chain to find delegated click handlers
   var el = this.parentElement;
   var depth = 0;
   while (el && depth < 50) {
@@ -845,12 +838,8 @@ function() {
 `;
 
 /**
- * Collect click-listener signatures for one node.
- * 1. DOM.resolveNode resolves backendNodeId to a remote object in the current session.
- * 2. DOMDebugger.getEventListeners records native click listeners by script location.
- * 3. Runtime.callFunctionOn runs the extractor above and records inline/delegated handlers by function source.
- * Failures are ignored and any signatures collected so far are returned, preventing one
- * inaccessible node from aborting render-info calculation for the whole tree.
+ * Get click listener signatures for a node.
+ * Combines CDP native listeners + framework-specific handler extraction.
  */
 async function getClickListenerSignatures(
   node: EnhancedDOMTreeNode,
@@ -867,18 +856,13 @@ async function getClickListenerSignatures(
     const objectId = resolved?.object?.objectId;
     if (!objectId) return sigs;
 
-    // 1. CDP Native event listeners.
-    const result = await sendCmd<{
-      listeners: CDPEventListener[];
-    }>('DOMDebugger.getEventListeners', { objectId });
-
-    for (const l of result?.listeners ?? []) {
-      if (l.type === 'click') {
-        sigs.push(`native:${l.scriptId}:${l.lineNumber}:${l.columnNumber}`);
-      }
-    }
-
-    // Frame processors such as 2. React, Vue and jQuery
+    // Only framework handlers are collected. DOMDebugger.getEventListeners was
+    // also probed here, a third serial round trip per candidate, but its
+    // signatures never changed the output on any fixture: rule 2 of
+    // deduplicateByListeners requires a matching hit target as well, and that
+    // already subsumes what a native listener location tells us. Framework
+    // handlers do carry their own weight — a parent and child bind different
+    // functions, which is exactly what distinguishes them.
     const fwResult = await sendCmd<{
       result: { value?: string[] };
     }>('Runtime.callFunctionOn', {
@@ -894,15 +878,14 @@ async function getClickListenerSignatures(
       }
     }
   } catch {
-    // The elements in the dynamic page may be invalid or unable to be parsed; at this point, an empty signature is kept and other candidates continue to be processed.
+    // Element may not be resolvable
   }
   return sigs;
 }
 
 /**
- * Stage 4: Batch access to all clicks on the isCandidate node.
- * This must run after markInteractiveCandidates(); the traversal currently follows only childrenNodes and does not enter
- * shadowRoots or contentDocument. DOM.enable Failed to process as "may have been enabled " , followed by a search for candidate nodes.
+ * Batch fetch click listener signatures for all isCandidate nodes.
+ * Must run after markInteractiveCandidates since it only targets candidate nodes.
  */
 async function fetchClickListenerSignatures(
   root: EnhancedDOMTreeNode,
@@ -925,7 +908,7 @@ async function fetchClickListenerSignatures(
   try {
     await cdpClient.sendCommand('DOM.enable');
   } catch {
-    // The DOM domain may already be enabled and will not interrupt subsequent candidate queries.
+    // May already be enabled
   }
 
   await Promise.all(
@@ -959,15 +942,8 @@ function collectCandidateDescendants(
 }
 
 /**
- * Phase 5: compare candidate ancestors and descendants top-down to mark duplicate listeners.
- *
- * The current phase and collectCandidateDescendants () go only along childrenNodes. For every ancestor:
- * 1. In the same OOPIF session, if a descendant resolves to the ancestor's backend node
- *    rather than itself, mark it as a duplicate and record listenerHostId.
- * 2. Otherwise, require the same hit target and require every descendant listener signature
- *    to be present on the ancestor. Signatures alone are insufficient because delegated
- *    handlers may branch on event.target.
- * 3. Continue comparing below duplicate nodes; mark the ancestor that owns the listener as isListenerHost.
+ * Mark descendant candidates as isDuplicateListener if they share the same
+ * click target (hitBackendNodeId) or click listener signatures as an ancestor candidate.
  */
 function deduplicateByListeners(root: EnhancedDOMTreeNode): void {
   const visit = (node: EnhancedDOMTreeNode) => {
@@ -979,7 +955,7 @@ function deduplicateByListeners(root: EnhancedDOMTreeNode): void {
         if (desc.renderInfo?.isDuplicateListener) continue;
         if (!desc.renderInfo) continue;
 
-        // Rule 1: require the same frame and hit target, excluding a descendant that hits itself.
+        // 1. Same hit target (same frame, excluding self-hits)
         if (
           node.oopifSessionId === desc.oopifSessionId &&
           node.renderInfo.hitBackendNodeId !== undefined &&
@@ -993,8 +969,9 @@ function deduplicateByListeners(root: EnhancedDOMTreeNode): void {
           continue;
         }
 
-        // Rule 2: descendant listener signatures must be a subset of the ancestor's and both must hit the same target.
-        // Signatures alone are insufficient because delegated handlers often branch on event.target.
+        // 2. Listener signatures subset + same hit target check
+        // Same signatures alone is not enough — delegated handlers often differentiate
+        // by event.target, so also require the hit test target to match.
         const parentSigs = node.renderInfo.clickListenerSignatures;
         const childSigs = desc.renderInfo.clickListenerSignatures;
         if (!parentSigs || parentSigs.length === 0) continue;

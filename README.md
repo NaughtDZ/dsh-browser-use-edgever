@@ -4,11 +4,15 @@
 
 <p align="center">Native Chromium browser Agent tools for DeepSeek Harness</p>
 
+WebVoyager 109 tasks / 3 站点：成功率 88.1%（AllRecipes 88.6%、Apple 85.7%、Amazon 89.7%），平均 26.7 步、167.3s、$0.0968/任务。完整的 LLM-as-a-Judge、Trace、成本口径和恢复流程见[评测指南](docs/evaluation.md)。
+
+浏览器命令失败的处理、点击检查和脚本异常说明见[可靠性文档](docs/reliability.md)；原文引用的获取方式见[证据文档](docs/evidence.md)。
+
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22.19-blue" alt="Node.js >= 22.19">
   <img src="https://img.shields.io/badge/browser-Chrome%20%7C%20Chromium-blue" alt="Chrome or Chromium">
-  <img src="https://img.shields.io/badge/tools-17-success" alt="17 browser and memory tools">
+  <img src="https://img.shields.io/badge/tools-20-success" alt="20 browser and evidence tools">
 </p>
 
 <p align="center"><strong><a href="#中文">中文</a> | <a href="#english">English</a></strong></p>
@@ -21,7 +25,7 @@
 
 > 给 DeepSeek Harness 装上真实浏览器：让 Agent 能够打开网页、理解页面、填写表单、管理标签页并完成多步骤任务。
 
-`dsh-browser-plugin` 是一个可独立安装的 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web profile 插件。它直接启动本机 Chrome 或 Chromium，通过 Puppeteer、Chrome DevTools Protocol（CDP）和增量 DOM 快照向 Agent 提供 15 个浏览器操作，并配有 2 个任务记忆工具。
+我们将 `dsh-browser-plugin` 作为可独立安装的 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web profile 插件。它直接启动本机 Chrome 或 Chromium，通过 Puppeteer、Chrome DevTools Protocol（CDP）和增量 DOM 快照向 Agent 提供 16 个浏览器操作与 4 个任务证据工具。
 
 本仓库只包含浏览器插件自身的源码，不包含 DeepSeek Harness 源码，也不要求用户克隆 Harness 仓库。
 
@@ -48,6 +52,10 @@
 - **显式浏览器路由** — 用户明确要求使用浏览器或 Chromium 时，模型从 `browser_start` 开始并持续使用 `browser_*`，不会用 `web_search` 或 `web_fetch` 替代。
 - **安全默认值** — Chromium sandbox 默认开启；改变页面状态的操作默认需要 DSH approval。
 - **有界输出** — 页面脚本结果过大时只向模型返回预览，并把完整结果写入指定目录或临时目录。
+- **证据化任务记录** — 我们按页面访问归档 observation，用 `sourceRef` 登记结构化字段，并在完成时重查声明的字段覆盖。
+- **操作后置条件** — 点击和输入可检查文本或 URL；实际执行、验证通过和整体任务完成始终是三个独立结论。
+- **精确检查点恢复** — 我们用完整 `stateId` 恢复支持的表单、展开状态与滚动位置，并将不完整恢复明确标为 `partial`。
+- **结构化与跨域诊断** — `browser_execute_script` 支持 JSON-LD、重复列表和有界结果；OOPIF 路由、CDP 录制/回放与统计接口用于可复现的 DOM 诊断。
 
 ## 快速开始
 
@@ -171,13 +179,14 @@ CDP Snapshot
   → 返回给 Agent
 ```
 
-`browser_restore_state` 使用完整版本号（如 `tab0-dom3.2`）恢复检查点 URL、原生表单值、勾选/下拉选项、details 展开状态，以及主页面和局部容器的滚动位置。恢复后逐项核对；不完整时返回 `partial`。密码、文件选择、iframe、任意弹窗与 SPA 内存不在恢复范围内。
+`browser_restore_state` 优先回到仍有效的浏览器历史条目，失败时访问原 URL，再逐项恢复并验证受支持状态。它使用完整版本号（如 `tab0-dom3.2`）恢复检查点 URL、原生表单值、勾选/下拉选项、details 展开状态，以及主页面和局部容器的滚动位置。恢复后逐项核对；不完整时返回 `partial`。密码、文件选择、iframe、任意弹窗与 SPA 内存不在恢复范围内。
 
 ## 工具清单
 
 | 工具 | 作用 |
 |---|---|
 | `browser_start` | 启动浏览器并打开 URL |
+| `browser_observe` | 不刷新页面，重新观察完整状态；支持 HTML 或 Markdown |
 | `browser_goto` | 导航当前标签页 |
 | `browser_refresh` | 刷新当前页面 |
 | `browser_restore_state` | 按精确 `stateId` 恢复可支持的页面状态，并报告未恢复项 |
@@ -192,7 +201,9 @@ CDP Snapshot
 | `browser_execute_script` | 在页面上下文执行 JavaScript |
 | `browser_view_elements` | 截取 `[view:ID]` 视觉元素 |
 | `browser_wait` | 可取消地等待指定秒数 |
-| `browser_record_facts` | 保存观察中的任务事实与来源，或确认观察与任务无关 |
+| `browser_define_task` | 声明本轮任务字段与最低记录数 |
+| `browser_record_facts` | 登记 sourceRef 任务记录；兼容旧事实格式 |
+| `browser_check_coverage` | 检查字段覆盖；完成阶段自动重查 |
 | `browser_recall` | 搜索当前/历史事实，或回读已归档的页面观察 |
 
 ## 架构
@@ -216,7 +227,7 @@ DSH Agent Session
 dsh-browser/
 ├─ src/
 │  ├─ index.ts              # Cordis 插件入口与生命周期
-│  ├─ plugin-tools.ts       # 15 个 DSH 工具注册器
+│  ├─ plugin-tools.ts       # 浏览器注册器，配合记忆工具共 20 个
 │  ├─ tool-schemas.ts       # 参数与输出 schema
 │  ├─ config.ts             # 配置 schema 与校验
 │  └─ browser/
@@ -233,6 +244,97 @@ dsh-browser/
 `src/` 是源码事实来源，`lib/` 是 `npm run build` 生成的发布产物，不要直接编辑 `lib/`。
 
 上下文策略优先通过 `Session.snapshotEvents()` 读取当前宿主日志；对依赖锁定的 DSH `0.1.2-alpha.2` 使用其 `events` getter。源码链接安装修改后需重新构建插件并重启 `pnpm dsh web`，使进程加载新的 `lib/`。
+
+## 浏览器能力与诊断
+
+我们对 20 个工具统一复用 approval、取消和输出限额，并保持以下能力边界：
+
+| 能力 | 使用方式与边界 |
+|---|---|
+| 显式观察 | `browser_observe({format: "html"})` 不导航、不刷新，建立完整 DOM 基线；`markdown` 使用完整 AX 语义树并保留操作引用。 |
+| 结构化数据 | `__data`、`__find`、`__records` 和 `__skeleton` 帮助读取 JSON-LD、Microdata 和已加载的重复列表；页面数据仍需按任务要求验证。 |
+| 跨域 iframe | CDP 请求路由到节点所属子会话，元素引用按 frame 隔离；主页成功不自动证明子框架可操作。 |
+| 页面变化提醒 | Host 在 URL 与最近观察不一致时要求重新观察；相同 URL 内的人工修改仍需显式观察。 |
+| 离线回归 | `npm run dom:regression -- capture|verify` 录制和回放受控 CDP 输入；录制可能含页面数据，只保存在本地受控目录。 |
+
+`dsh-browser-plugin/diagnostics` 导出 `captureDomTape`、`replayDomTape`、`CDPTape` 和 `CDPStats`。这些接口用于 DOM 文本、元素编号和管线性能诊断，不等同于线上任务成功率。
+
+## 运行 WebVoyager 评测
+
+在本仓库根目录打开 PowerShell，要求 Node.js `>=22.19` 和本机 Chrome/Chromium。脚本直接启动真实 DSH AgentLoop 和浏览器，无需先启动 DSH Web 界面。Agent 自动操作网页，独立的 LLM Judge 请求负责评分。
+
+### 1. 安装依赖并构建
+
+```powershell
+# 首次使用或依赖变化后安装
+npm install
+# 首次评测及修改源码后重新构建
+npm run build
+```
+
+默认读取现有 DSH 配置（`DSH_HOME` 默认是 `~/.dsh`）：从 `settings.yaml` 获取当前 Agent provider/model/reasoningEffort，通过环境变量或 `.credentials.yaml` 的凭据引用获取 API Key。MiniMax 默认沿用 DSH 的 Anthropic-compatible 路径；`high` 按当前 DSH 映射为 `thinking.enabled` 和 16384-token 思考预算，完整 thinking 块随工具调用历史回放。默认 Agent 和 Judge 共用模型、推理档位及凭据，也可用 `EVAL_*` 环境变量分别覆盖，密钥不会写入仓库。
+
+### 2. 检查选题并可选试跑
+
+```powershell
+# 只检查并列出选题，不启动浏览器、不调用模型 API
+npm run eval -- --dry-run --reasoning-effort high --headed --timeout 600000 --judge evidence
+
+# Allrecipes、Apple、Amazon 各一题，显示浏览器窗口方便观察
+npm run eval -- --out output/evals/pilot-run1 --ids "Allrecipes--0,Apple--0,Amazon--0" --reasoning-effort high --concurrency 3 --headed --timeout 600000 --judge evidence
+```
+
+正式评测条件固定为 `--headed --timeout 600000 --judge evidence`：显示浏览器窗口、每题最多运行 600 秒，并使用浏览器文本证据评分。它们也是评测器的默认值，但命令中仍显式写出，便于复核 manifest 和复现实验。`--reasoning-effort high` 显式固定 Agent 和默认 Judge 的推理档位，并写入 manifest 和运行指纹。真实试跑和全量评测都会消耗 Agent、Judge 的 API 额度；`npm run eval:smoke` 则使用真实浏览器和确定性模型替身，不调用收费 API，也不产生正式评测成绩。
+
+### 3. 顺序运行全部 109 题
+
+```powershell
+npm run eval -- --out output/evals/webvoyager-109-20260916-concurrency1 --reasoning-effort high --concurrency 1 --headed --timeout 600000 --judge evidence
+```
+
+数据集包含 Allrecipes 35 题、Apple 35 题、Amazon 39 题。我们的完整运行使用可见浏览器、`evidence` 评分、每题 600 秒上限、50 轮模型请求和 `--concurrency 1`。并发会影响限流频率和延迟，对照运行必须保持一致；每次全新评测使用独立输出目录。
+
+WebVoyager 109 tasks / 3 站点：成功率 88.1%（AllRecipes 88.6%、Apple 85.7%、Amazon 89.7%），平均 26.7 步、167.3s、$0.0968/任务。这里的成本是 Agent 标价等价估算；加上 Judge 后平均为 $0.1047/任务。
+
+启动时会用小请求检查模型服务，默认准入超时为 60000 ms，可通过 `--preflight-timeout` 调整。Agent 运行中的临时限流、服务端错误、超时和传输错误会按有界指数退避自动重试；preflight 和独立 Judge 请求则是单次调用，失败后停止派发或留下未完成评分。额度耗尽与认证失败不会重试。若出现 `quota_exhausted`，需先恢复对应模型账户的额度。缺失或未评分任务不能作为完整评测成绩发布。
+
+| `halted` / 现象 | 含义 | 处理方式 |
+|---|---|---|
+| `provider_rate_limit` | preflight/Judge 首次遇到 HTTP 429，或 Agent 的有界重试仍未恢复 | 等待限流窗口恢复并使用 `--concurrency 1`；零题 preflight 失败且配置未变时可 `--resume`，要重做已有失败题或取得干净成绩则换新目录 |
+| `provider_connection` | preflight/Judge 单次调用，或 Agent 重试后仍遇到超时、传输错误、HTTP 5xx | preflight 查控制台和 `preflight.ndjson`；Agent 查 `TASK_ID/result.json`、`trace.ndjson`、`host-log.ndjson`；Judge 查 `results.ndjson` 的 `judge_result`。慢模型可在新输出目录设置 `--preflight-timeout 120000` |
+| `quota_exhausted` | 账户额度、余额或 Token Plan 用量已耗尽 | 恢复额度后再运行；此类永久错误不会自动重试 |
+| `provider_authentication` | API Key 无效、缺失权限或服务返回 HTTP 401/403 | 检查 DSH provider、`apiKeyEnv` 和 `.credentials.yaml` 引用，不要把密钥写入仓库 |
+| `provider_preflight_failed` | 未归入上述类型的准入错误 | 读取 `output/evals/RUN_NAME/preflight.ndjson` 中的 `error`，不要把零题运行当作 benchmark 成绩 |
+
+`Allrecipes` 返回 People Inc access issue 页面时属于目标网站访问限制，不是模型 provider 故障；降低模型并发或延长 preflight 超时不会绕过该限制。
+
+### 4. 中断后继续
+
+```powershell
+npm run eval -- --out output/evals/webvoyager-109-20260916-concurrency1 --reasoning-effort high --concurrency 1 --headed --timeout 600000 --judge evidence --resume
+
+# Agent 结果已保存、仅 Judge 失败时重新评分，不重新运行浏览器
+npm run eval -- --out output/evals/webvoyager-109-20260916-concurrency1 --reasoning-effort high --judge-only --judge evidence
+```
+
+续跑需保持原输出目录、选题、配置及代码指纹完全一致。修改 `--concurrency`、`--preflight-timeout`、模型、Judge、评测脚本或构建产物后不能续跑原目录，必须指定新的 `--out`。已有结果（包括失败和超时）会跳过，不会自动重跑或重新评分；仅 Judge 失败时使用 `--judge-only` 生成单独的 `judged-evidence.json`。发现已有 `trace.ndjson` 但没有 `result.json` 的中断题时，评测器会直接拒绝继续，避免静默重试。需要重新执行这些题时，使用新的输出目录。不要删除仍需续跑的记录。
+
+### 5. 查看结果与保留代码
+
+全量命令的结果位于命令指定的 `output/evals/RUN_NAME/`：
+
+| 文件 | 内容 |
+|---|---|
+| `report.md` | 总体及分站点成功率、平均步数、耗时、成本估算 |
+| `summary.json` | 结构化统计和评分完整性标记 |
+| `manifest.json` | 选题、模型、API 协议、推理档位、参数及代码指纹 |
+| `results.ndjson` | 逐题执行与评分结果 |
+| `TASK_ID/trace.ndjson` | 模型请求、响应和工具执行记录 |
+| `TASK_ID/result.json`、`TASK_ID/final.png` | Agent 原始结果和最终截图（如有） |
+
+`completed` 只代表 Agent 执行结束，`judge_result.pass` 才代表 Judge 判定通过。当前只对 MiniMax-M3 提供公开单价估算，GLM 等其他模型会显示 `unpriced_calls`，`total_cost_usd: null` 不代表实际费用为 0；估算也不是 Token Plan 实际账单。
+
+`output/` 中的旧评测记录可在不再需要回看、续跑或重新评分时删除，不影响新评测。请保留正式代码 `scripts/eval/`、插件源码 `src/`、数据集 `assets/benchmark/` 及依赖清单。更多参数、评分口径和参考结果差异见[评测指南](docs/evaluation.md)。
 
 ## 开发与验证
 
@@ -261,33 +363,7 @@ node --import tsx/esm --test ../dsh-browser/test/browser-context.test.mjs
 Remove-Item Env:DSH_TEST_SESSION_MODULE
 ```
 
-贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全边界和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
-
-## 9.8 更新
-
-### 浏览可靠性修正：探索、动作结果与检查点
-
-| 问题 | 当前处理 | 如何理解结果 |
-|---|---|---|
-| 动态插入或虚拟列表导致旧“已看”范围失准 | 按完整 DOM 内容、容器身份与尺寸检查覆盖记录；内容或布局变化后舍弃不匹配的历史范围。滚动推进为实际视口的 80%，不再跳过扩展区。 | 表示当前页面版本的视口覆盖，不代表全部业务条目已阅读；完整性任务仍须记录条目 ID。 |
-| 找不到元素、遮挡或输入截断仍被当作成功 | 返回 `error`；输入后读取实际值。点击/输入可指定 `expectText`、`expectUrl`，最多等待 5 秒验证。 | `status=success` 只表示执行未失败；检查 `metadata.verification`，没有后置条件时明确标为未验证。任务完成仍需核对全部用户要求。 |
-| 历史恢复只打开 URL，且同 URL 的多次观察无法区分 | 每次观察保留精确版本 ID 和内存检查点；恢复支持的字段与滚动并逐项检查。 | 缺失、只读或无法恢复的状态返回 `partial`；失效检查点返回 `error`，不会宣称完整恢复。 |
-
-例如：`browser_click({"elementIndex":12,"expectText":"筛选已应用"})`；`browser_restore_state({"stateId":"tab0-dom3.2"})`。检查点只存在于当前浏览器缓存，关闭标签页、重启或缓存淘汰后不可用。详见 [浏览可靠性与验证](docs/reliability.md)。
-
-### 跨页面任务记忆：先保存事实，再清理 DOM
-
-新增 `browser_record_facts` 和 `browser_recall`，工具总数由 15 个增至 17 个。Agent 可把页面中的实体、字段、值和原文证据保存到当前 DSH Session 日志；来源 URL 与观察时间由 Host 绑定，不接受模型自行声明。
-
-工作流程是：**观察页面 → 保存相关事实或确认页面无关 → 清理旧 DOM → 后续通过 `browser_recall` 查询。** 未处理的旧页面会在下一次浏览操作前触发拦截，已保存事实支持搜索、分页和历史值回查，并且不同 DSH Session 之间相互隔离。
-
-### Host 如何管理 Browser State 与 Agent Context
-
-新增的 `browserRuntime` 由 Host 按 Session 管理独立浏览器，并通过 `agent/pre-step` 在每轮模型调用前保留最新 DOM、必要增量基线和当前截图，替换过期页面内容；缺失的增量基线可由同次观察的完整快照恢复。
-
-`maxContextDeltas` 默认值为 8，用于定期生成完整 DOM 检查点。浏览器重启后旧元素引用失效；上下文补齐不会恢复 Chromium 进程、登录状态或 SPA 内存，也不是通用 Agent 记忆系统；原生表单与滚动恢复由独立的 `browser_restore_state` 执行。
-
-9.8 验证结果：38 项测试、严格类型检查、17 工具安装导入、真实 Chromium 基础/可靠性场景及真实 DSH Agent Loop 跨页记忆场景均通过。可靠性场景覆盖 60 条虚拟列表、表单与滚动恢复、部分恢复和操作后置条件；模型决策使用确定性测试适配器，未调用线上 LLM。
+贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全边界和漏洞报告方式见 [SECURITY.md](SECURITY.md)。我们将动态列表、动作后置条件、检查点恢复、证据记录和 Host 上下文管理视为项目的常规能力，其行为契约分别写在[可靠性文档](docs/reliability.md)和[证据文档](docs/evidence.md)中。
 
 ## 许可证
 
@@ -301,7 +377,9 @@ Remove-Item Env:DSH_TEST_SESSION_MODULE
 
 > Give DeepSeek Harness a real browser so an Agent can open pages, understand interfaces, fill forms, manage tabs, and complete multi-step tasks.
 
-`dsh-browser-plugin` is a standalone [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) plugin for the Web profile. It launches a local Chrome or Chromium instance and exposes 15 browser operations plus two task-memory tools through Puppeteer, the Chrome DevTools Protocol (CDP), and incremental DOM snapshots.
+We build `dsh-browser-plugin` as a standalone [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) plugin for the Web profile. It launches a local Chrome or Chromium instance and exposes 16 browser operations plus four task/evidence tools through Puppeteer, the Chrome DevTools Protocol (CDP), and incremental DOM snapshots.
+
+Our completed WebVoyager run covers 109 tasks across three sites: 88.1% overall success (AllRecipes 88.6%, Apple 85.7%, Amazon 89.7%), with 26.7 average tool calls, 167.3 seconds, and an estimated $0.0968 Agent cost per task.
 
 This repository contains only the browser plugin's own source. It neither contains DeepSeek Harness source nor requires users to clone the Harness repository.
 
@@ -326,6 +404,10 @@ This repository contains only the browser plugin's own source. It neither contai
 - **Explicit browser routing** — When the user explicitly requests a browser or Chromium, the model starts with `browser_start` and stays on `browser_*` instead of substituting `web_search` or `web_fetch`.
 - **Secure defaults** — Chromium sandboxing is enabled, and state-changing operations request DSH approval by default.
 - **Bounded output** — Oversized script results return a preview while the full value is written to a configured or temporary directory.
+- **Evidence-backed records** — We archive observations by visit, register structured fields through `sourceRef`, and recheck declared coverage at completion.
+- **Postcondition-aware actions** — Click and input can verify text or URL outcomes; execution, checked postconditions, and whole-task completion remain separate claims.
+- **Exact checkpoint restoration** — We restore supported form, details, and scroll state by full `stateId`, reporting incomplete restoration as `partial`.
+- **Structured and cross-frame diagnostics** — Script helpers cover JSON-LD and repeated records, while OOPIF routing plus CDP tape/statistics support reproducible DOM diagnostics.
 
 ## Quick start
 
@@ -456,6 +538,7 @@ CDP Snapshot
 | Tool | Purpose |
 |---|---|
 | `browser_start` | Launch the browser and open a URL |
+| `browser_observe` | Observe a full current state without reloading, as HTML or Markdown |
 | `browser_goto` | Navigate the active tab |
 | `browser_refresh` | Reload the active page |
 | `browser_restore_state` | Restore supported page state using the exact checkpoint `stateId`; report omissions |
@@ -470,7 +553,9 @@ CDP Snapshot
 | `browser_execute_script` | Run JavaScript in the page context |
 | `browser_view_elements` | Capture `[view:ID]` visual elements |
 | `browser_wait` | Wait for a bounded number of seconds with cancellation support |
-| `browser_record_facts` | Save source-grounded task facts or explicitly review irrelevant observations |
+| `browser_define_task` | Declare required fields and minimum records for this turn |
+| `browser_record_facts` | Register sourceRef task records; support legacy facts |
+| `browser_check_coverage` | Check field coverage and report missing evidence |
 | `browser_recall` | Search current/historical facts or read archived browser observations |
 
 ## Architecture
@@ -494,7 +579,7 @@ Repository layout:
 dsh-browser/
 ├─ src/
 │  ├─ index.ts              # Cordis entry and lifecycle
-│  ├─ plugin-tools.ts       # 15 DSH tool registrations
+│  ├─ plugin-tools.ts       # Browser registrations; 20 tools with memory tools
 │  ├─ tool-schemas.ts       # parameter and output schemas
 │  ├─ config.ts             # config schema and validation
 │  └─ browser/
@@ -541,31 +626,15 @@ npm run verify:installed
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [SECURITY.md](SECURITY.md) for security boundaries and vulnerability reporting.
 
-## 9.8 Update
+## Browser, evidence, and diagnostic contract
 
-### Browser reliability fixes: exploration, action results and checkpoints
+We treat dynamic-list coverage, action postconditions, exact checkpoint restoration, evidence records, and Host context management as normal product capabilities rather than dated additions. The package exposes 20 tools: 16 browser operations and four task/evidence tools.
 
-| Problem | Current behavior | Result contract |
-|---|---|---|
-| Stale coverage after insertion or virtual-row replacement | Validate coverage against captured DOM content, container identity and dimensions; advance 80% of the actual viewport. | Coverage is revision-specific, not proof that every business item was read. Track item identities for completeness. |
-| Missing/occluded targets or truncated input looked successful | Return `error`, read back input values, and optionally check `expectText` / exact `expectUrl` for up to 5 seconds. | Inspect `metadata.verification`; successful dispatch without a postcondition is explicitly unverified. Task completion is a separate check. |
-| URL-only restoration and ambiguous same-URL snapshots | Use exact versioned IDs and memory-only checkpoints to restore supported fields and scrolling, then verify each item. | Missing/read-only/unsupported state yields `partial`; unavailable checkpoints yield `error`. |
+The evidence flow is **archive → visit-level Evidence Bundles → sourceRef records → continue browsing → check declared field coverage at completion → recall or browse to fill gaps**. Coverage is revision-specific and does not prove exhaustive search or arbitrary answer prose. Exact checkpoint IDs restore supported native fields and scrolling; unavailable state returns `error`, while incomplete restoration returns `partial`.
 
-Examples: `browser_click({"elementIndex":12,"expectText":"Filter applied"})` and `browser_restore_state({"stateId":"tab0-dom3.2"})`. Checkpoints expire on tab closure, browser restart or cache eviction. See [reliability and verification](docs/reliability.md).
+`browser_observe` creates a current full baseline without reloading, with optional Markdown action references. Script helpers include `__data`, `__records`, `__skeleton`, and browser-free `guide: true`. Child-frame CDP routing, frame-scoped references, URL-change notices, and bounded script evidence extend the same execution contract.
 
-### Cross-page task memory: save facts before retiring DOM
-
-`browser_record_facts` and `browser_recall` increase the tool set from 15 to 17. The Agent can store entities, attributes, values, and exact evidence in the current DSH Session log; source URLs and observation times are bound by the Host rather than supplied by the model.
-
-The flow is: **observe a page → save relevant facts or mark it irrelevant → retire old DOM → query later with `browser_recall`.** Unreviewed older pages block the next browser action, while saved facts support search, pagination, historical values, and isolation between DSH Sessions.
-
-### Host-managed Browser State and Agent Context
-
-The Host now provides a Session-scoped `browserRuntime`. Before each model call, the `agent/pre-step` hook keeps the latest DOM, required incremental baselines, and current screenshots while replacing stale page content. A missing baseline can be repaired from the complete snapshot captured with the same observation.
-
-`maxContextDeltas` defaults to 8 and creates periodic full-DOM checkpoints. Browser restarts invalidate old element references; context recovery does not restore Chromium processes, login state or SPA memory, and is not general-purpose Agent memory. Native form and scroll restoration is handled separately by `browser_restore_state`.
-
-9.8 verification: 38 tests, strict type checking, installed-package import with 17 tools, real Chromium baseline/reliability scenarios, and real DSH Agent Loop memory regression passed. Reliability checks cover 60 virtual rows, form/scroll checkpoints, partial restoration and action postconditions. Model decisions used a deterministic test adapter, not an online LLM.
+Our opt-in `dom:regression` capture/verify workflow and the separate `/diagnostics` export provide socket-free DOM regression and CDP statistics. Recordings contain local page data and are not general Agent evaluation. See [reliability and verification](docs/reliability.md) and [the evidence state model](docs/evidence.md).
 
 ## License
 

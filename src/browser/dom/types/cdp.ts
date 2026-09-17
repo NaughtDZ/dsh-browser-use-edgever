@@ -151,6 +151,7 @@ export namespace DOM {
     value?: string
     contentDocument?: Node
     shadowRoots?: Node[]
+    pseudoElements?: Node[]
     shadowRootType?: "user-agent" | "open" | "closed"
     frameId?: string
     isSVG?: boolean

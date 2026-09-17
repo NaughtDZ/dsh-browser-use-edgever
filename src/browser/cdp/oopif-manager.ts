@@ -173,14 +173,14 @@ export class OOPIFManager {
    * All data found in OOPIF session are collected in parallel.
    * Converts a single OOPIF to null when a single OOPIF fails, filters all failed entries after completion and returns only the successful result.
    */
-  async captureAllOOPIFTrees(): Promise<OOPIFTreeData[]> {
+  async captureAllOOPIFTrees(fullAX = false): Promise<OOPIFTreeData[]> {
     if (!this.cdpClient || this.sessions.size === 0) {
       return [];
     }
 
     const results = await Promise.all(
       [...this.sessions.values()].map(session =>
-        this.captureOOPIFTree(session).catch(() => {
+        this.captureOOPIFTree(session, fullAX).catch(() => {
           // A single iframe collection failure does not block other iframe or main page results.
           return null;
         }),
@@ -196,6 +196,7 @@ export class OOPIFManager {
    */
   private async captureOOPIFTree(
     session: OOPIFSession,
+    fullAX: boolean,
   ): Promise<OOPIFTreeData> {
     const cdpClient = this.cdpClient!;
     const { sessionId } = session;
@@ -218,14 +219,14 @@ export class OOPIFManager {
         10000,
         sessionId,
       ),
-      cdpClient
+      fullAX ? cdpClient
         .sendCommand<Accessibility.GetFullAXTreeResponse>(
           'Accessibility.getFullAXTree',
           {},
           10000,
           sessionId,
         )
-        .catch(() => ({ nodes: [] }) as Accessibility.GetFullAXTreeResponse),
+        .catch(() => ({ nodes: [] }) as Accessibility.GetFullAXTreeResponse) : Promise.resolve({ nodes: [] }),
     ]);
 
     return {

@@ -32,6 +32,8 @@ import {
 } from './tree/visual-element';
 import { pruneTree } from './tree/pruner';
 import { createDiffTree, type DiffShow } from './tree/diff';
+import { renderToMarkdown } from './markdown/renderer.js';
+import { pruneForMarkdown } from './markdown/pruner.js';
 import { assignAndHighlight, cleanupHighlights, type DOMSelectorMap } from './tree/highlight';
 import type {
   DOMRect,
@@ -67,6 +69,7 @@ interface DomSnapshot {
   timestamp: number;
   topElementCount: number;
   navigationIndex?: number;
+  historyEntryId?: number;
   url?: string;
   viewportStats?: ViewportStats;
   expand?: number;
@@ -92,6 +95,16 @@ interface DomSnapshot {
  * Top-level API combining CDP communication, tree construction, page operations,
  * snapshot caching, and serialization.
  */
+function centerOf(
+  rect?: DOMRect | null,
+): { x: number; y: number } | undefined {
+  if (!rect) return undefined;
+  return {
+    x: Math.round(rect.x + rect.width / 2),
+    y: Math.round(rect.y + rect.height / 2),
+  };
+}
+
 export class DomService {
   private client: CDPClient;
   readonly commands: CDPCommands;
@@ -158,7 +171,12 @@ export class DomService {
    * it does not alter the page elements referenced by selectorMap.
    */
   async cleanupHighlightsBeforeSnapshot(): Promise<void> {
-    await cleanupHighlights(this.client, this.oopifManager);
+    this.settleMonitor.suspend();
+    try {
+      await this.evaluate("document.querySelectorAll('.dsh-browser-click-annotation,.dsh-browser-capture-annotation,#dsh-browser-annotation-style,#dsh-browser-capture-style').forEach(el => el.remove())");
+      await cleanupHighlights(this.client, this.oopifManager);
+    }
+    finally { this.settleMonitor.resume(); }
   }
 
   setPageCheckpoint(domId: string, checkpoint: PageCheckpoint): void {
@@ -172,6 +190,32 @@ export class DomService {
 
   getCachedUrl(domId: string): string | undefined {
     return this.cache.get(domId)?.url;
+  }
+
+  async captureHistoryEntry(domId: string): Promise<void> {
+    const snapshot = this.cache.get(domId);
+    if (!snapshot) return;
+    const history = await this.client.sendCommand<{ currentIndex: number; entries: Array<{ id: number }> }>('Page.getNavigationHistory').catch(() => undefined);
+    snapshot.historyEntryId = history?.entries[history.currentIndex]?.id;
+  }
+
+  /** Return false when Chrome has evicted the entry; the caller then navigates by URL. */
+  async restoreHistoryEntry(domId: string, signal: AbortSignal): Promise<boolean> {
+    const snapshot = this.cache.get(domId);
+    if (snapshot?.historyEntryId === undefined) return false;
+    signal.throwIfAborted();
+    const history = await this.client.sendCommand<{ currentIndex: number; entries: Array<{ id: number }> }>('Page.getNavigationHistory');
+    signal.throwIfAborted();
+    if (!history.entries.some(entry => entry.id === snapshot.historyEntryId)) return false;
+    if (history.entries[history.currentIndex]?.id !== snapshot.historyEntryId) {
+      const navigation = this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000, signal }).catch(() => undefined);
+      await this.client.sendCommand('Page.navigateToHistoryEntry', { entryId: snapshot.historyEntryId });
+      await navigation;
+    }
+    signal.throwIfAborted();
+    const current = await this.client.sendCommand<{ currentIndex: number; entries: Array<{ id: number }> }>('Page.getNavigationHistory');
+    signal.throwIfAborted();
+    return current.entries[current.currentIndex]?.id === snapshot.historyEntryId && this.page.url() === snapshot.url;
   }
 
   getLatestSelectorMap(): DOMSelectorMap | undefined {
@@ -364,14 +408,18 @@ export class DomService {
   async evaluateWithReturn(expression: string): Promise<any> {
     const result = await this.client.sendCommand<{
       result: { value?: any; subtype?: string; description?: string };
-      exceptionDetails?: { text?: string };
+      exceptionDetails?: { text?: string; exception?: { description?: string; value?: unknown } };
     }>('Runtime.evaluate', {
       expression,
       returnByValue: true,
       awaitPromise: true,
     });
     if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.text ?? 'Script error');
+      const detail = result.exceptionDetails;
+      const message = detail.exception?.description
+        ?? (detail.exception?.value !== undefined ? String(detail.exception.value) : detail.text)
+        ?? 'Script error';
+      throw new Error(`Page script error: ${message}`);
     }
     return result.result.value;
   }
@@ -552,6 +600,114 @@ export class DomService {
   /**
    * Scroll the elements to the centre of the view while supporting OOPIF nodes.
    * It must be called within the life cycle of withClient()
+   */
+  async showClickAnnotation(
+    x: number,
+    y: number,
+    type: 'click' | 'input',
+    elementIndex: number,
+  ): Promise<void> {
+    const color = type === 'click' ? '#FF0000' : '#00FF00';
+    const icon = type === 'click' ? '🖱️' : '⌨️';
+    const js = `(function() {
+      var existing = document.querySelectorAll('.dsh-browser-click-annotation');
+      existing.forEach(function(el) { el.remove(); });
+      var annotation = document.createElement('div');
+      annotation.className = 'dsh-browser-click-annotation';
+      annotation.style.cssText = 'position:fixed;left:${x}px;top:${y}px;width:20px;height:20px;margin-left:-10px;margin-top:-10px;border:3px solid ${color};border-radius:50%;background-color:${color}44;pointer-events:none;z-index:2147483647;animation:dsh-browser-annotation-pulse 0.5s ease-in-out;';
+      var label = document.createElement('div');
+      label.style.cssText = 'position:absolute;top:-35px;left:50%;transform:translateX(-50%);background:${color};color:white;padding:4px 8px;border-radius:4px;font-size:14px;font-weight:bold;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+      label.textContent = '${icon} [${elementIndex}] (${Math.round(x)},${Math.round(y)})';
+      annotation.appendChild(label);
+      if (!document.getElementById('dsh-browser-annotation-style')) {
+        var style = document.createElement('style');
+        style.id = 'dsh-browser-annotation-style';
+        style.textContent = '@keyframes dsh-browser-annotation-pulse { 0%,100% { opacity:1; transform:translate(-10px,-10px) scale(1); } 50% { opacity:0.7; transform:translate(-10px,-10px) scale(1.5); } }';
+        document.head.appendChild(style);
+      }
+      document.body.appendChild(annotation);
+      setTimeout(function() {
+        annotation.style.transition = 'opacity 0.3s';
+        annotation.style.opacity = '0';
+        setTimeout(function() { annotation.remove(); }, 300);
+      }, 2500);
+    })()`;
+    await this.evaluate(js);
+  }
+
+  /**
+   * Show a camera viewfinder overlay and shutter flash effect for screenshot capture.
+   * The rect is in viewport-relative CSS pixels.
+   * Must be called within withClient().
+   */
+  async showCaptureAnnotation(rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }): Promise<void> {
+    const { x, y, width, height } = rect;
+    const js = `(function() {
+      var existing = document.querySelectorAll('.dsh-browser-capture-annotation');
+      existing.forEach(function(el) { el.remove(); });
+
+      if (!document.getElementById('dsh-browser-capture-style')) {
+        var style = document.createElement('style');
+        style.id = 'dsh-browser-capture-style';
+        style.textContent = [
+          '@keyframes dsh-browser-capture-focus { 0% { opacity:0; transform:scale(1.1); } 20% { opacity:1; transform:scale(1); } 80% { opacity:1; } 100% { opacity:0; } }',
+          '@keyframes dsh-browser-shutter-flash { 0% { opacity:0; } 10% { opacity:0.5; } 100% { opacity:0; } }'
+        ].join('\\n');
+        document.head.appendChild(style);
+      }
+
+      /* viewfinder rectangle */
+      var vf = document.createElement('div');
+      vf.className = 'dsh-browser-capture-annotation';
+      vf.style.cssText = 'position:fixed;left:${x}px;top:${y}px;width:${width}px;height:${height}px;border:3px solid #00BFFF;border-radius:4px;box-shadow:0 0 0 9999px rgba(0,0,0,0.35),0 0 20px rgba(0,191,255,0.5);pointer-events:none;z-index:2147483647;animation:dsh-browser-capture-focus 2.5s ease-out forwards;';
+
+      /* corner brackets */
+      var corners = [
+        'top:0;left:0;border-top:3px solid #fff;border-left:3px solid #fff;',
+        'top:0;right:0;border-top:3px solid #fff;border-right:3px solid #fff;',
+        'bottom:0;left:0;border-bottom:3px solid #fff;border-left:3px solid #fff;',
+        'bottom:0;right:0;border-bottom:3px solid #fff;border-right:3px solid #fff;'
+      ];
+      corners.forEach(function(css) {
+        var c = document.createElement('div');
+        c.style.cssText = 'position:absolute;width:16px;height:16px;' + css;
+        vf.appendChild(c);
+      });
+
+      /* camera icon label */
+      var label = document.createElement('div');
+      label.style.cssText = 'position:absolute;top:-32px;left:50%;transform:translateX(-50%);background:#00BFFF;color:white;padding:3px 10px;border-radius:4px;font-size:13px;font-weight:bold;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+      label.textContent = '📷 capture';
+      vf.appendChild(label);
+
+      document.body.appendChild(vf);
+
+      /* shutter flash overlay */
+      var flash = document.createElement('div');
+      flash.className = 'dsh-browser-capture-annotation';
+      flash.style.cssText = 'position:fixed;left:${x}px;top:${y}px;width:${width}px;height:${height}px;background:white;pointer-events:none;z-index:2147483647;animation:dsh-browser-shutter-flash 0.8s ease-out forwards;border-radius:4px;';
+      document.body.appendChild(flash);
+
+      setTimeout(function() {
+        var all = document.querySelectorAll('.dsh-browser-capture-annotation');
+        all.forEach(function(el) {
+          el.style.transition = 'opacity 0.3s';
+          el.style.opacity = '0';
+          setTimeout(function() { el.remove(); }, 300);
+        });
+      }, 2800);
+    })()`;
+    await this.evaluate(js);
+  }
+
+  /**
+   * Scroll element into view (centered), supports OOPIF.
+   * Must be called within withClient().
    */
   async scrollToElement(node: EnhancedDOMTreeNode): Promise<void> {
     if (node.oopifSessionId) await this.ensureOOPIF();
@@ -878,31 +1034,107 @@ export class DomService {
   }
 
   /**
-   * Use absolutePosition of the node to recheck whether it is still at the top of the click position.
+   * Recheck the hit target at the live click position in its owning document.
    * The coordinates are the same as the checkTopElements used to generate the snapshot; they must be called within withClient().
    */
-  async hitTestAtPoint(node: EnhancedDOMTreeNode): Promise<boolean> {
-    const pos = node.absolutePosition;
-    if (!pos) return true;
-
-    const centerX = Math.round(pos.x + pos.width / 2);
-    const centerY = Math.round(pos.y + pos.height / 2);
-
+  async hitTestAtPoint(
+    node: EnhancedDOMTreeNode,
+    rect?: DOMRect,
+  ): Promise<boolean> {
     const sessionId = node.oopifSessionId
       ? this.oopifManager.resolveSessionId(node.oopifSessionId)
       : undefined;
 
     const sendCmd = <T>(method: string, params?: Record<string, unknown>) =>
       this.client.sendCommand<T>(method, params, undefined, sessionId);
+    // Re-read child coordinates: layout may have moved since the snapshot or after scrolling.
+    let point: { x: number; y: number } | undefined;
+    if (sessionId) {
+      const [box, metrics] = await Promise.all([
+        sendCmd<{ model: { border: number[] } }>('DOM.getBoxModel', { backendNodeId: node.backendNodeId }),
+        sendCmd<{ cssLayoutViewport?: { pageX: number; pageY: number }; layoutViewport: { pageX: number; pageY: number } }>('Page.getLayoutMetrics'),
+      ]);
+      const q = box.model.border;
+      const viewport = metrics.cssLayoutViewport ?? metrics.layoutViewport;
+      point = { x: Math.round((q[0] + q[2] + q[4] + q[6]) / 4 + viewport.pageX), y: Math.round((q[1] + q[3] + q[5] + q[7]) / 4 + viewport.pageY) };
+    } else {
+      point = await this.toDocumentPoint(rect ?? node.absolutePosition);
+    }
+    if (!point) return false;
 
-    const hitBackendNodeId = await elementFromPoint(sendCmd, centerX, centerY);
+    const hitBackendNodeId = await elementFromPoint(sendCmd, point.x, point.y);
     if (hitBackendNodeId === undefined) return false;
-
     const snapshotHit = node.renderInfo.hitBackendNodeId;
-    return (
-      hitBackendNodeId === (snapshotHit ?? node.backendNodeId) ||
-      hitBackendNodeId === node.backendNodeId
+    if (hitBackendNodeId === snapshotHit || hitBackendNodeId === node.backendNodeId) return true;
+
+    // Snapshot hit checks resolve pseudo-elements to their hosts as well.
+    let root = node;
+    while (root.parentNode && root.parentNode.oopifSessionId === node.oopifSessionId) root = root.parentNode;
+    const findHost = (candidate: EnhancedDOMTreeNode): number | undefined => {
+      if (candidate.oopifSessionId !== node.oopifSessionId) return undefined;
+      if (candidate.pseudoElementIds?.includes(hitBackendNodeId)) return candidate.backendNodeId;
+      for (const child of [...candidate.childrenNodes ?? [], ...candidate.shadowRoots ?? [], ...candidate.contentDocument ? [candidate.contentDocument] : []]) {
+        const host = findHost(child);
+        if (host !== undefined) return host;
+      }
+      return undefined;
+    };
+    const host = findHost(root);
+    return host !== undefined && (host === snapshotHit || host === node.backendNodeId);
+  }
+
+  /** Centre of a viewport rect, moved into the main document's coordinates. */
+  private async toDocumentPoint(
+    rect?: DOMRect | null,
+  ): Promise<{ x: number; y: number } | undefined> {
+    if (!rect) return undefined;
+    const metrics = await this.commands.getLayoutMetrics();
+    const css = metrics.cssLayoutViewport ?? metrics.layoutViewport;
+    return {
+      x: Math.round(rect.x + rect.width / 2 + css.pageX),
+      y: Math.round(rect.y + rect.height / 2 + css.pageY),
+    };
+  }
+
+  /**
+   * Execute a JS function on the given node, with the element as `this`.
+   * Returns the JSON-serializable return value of the function.
+   */
+  async executeOnElement(
+    node: EnhancedDOMTreeNode,
+    functionDeclaration: string,
+  ): Promise<any> {
+    const sessionId = node.oopifSessionId
+      ? this.oopifManager.resolveSessionId(node.oopifSessionId)
+      : undefined;
+
+    const { object } = await this.client.sendCommand<{
+      object: { objectId?: string };
+    }>(
+      'DOM.resolveNode',
+      { backendNodeId: node.backendNodeId },
+      undefined,
+      sessionId,
     );
+    if (!object.objectId) throw new Error('Could not resolve element');
+
+    try {
+      const result = await this.client.sendCommand<{
+        result: { value?: unknown; description?: string };
+        exceptionDetails?: { text?: string; exception?: { description?: string } };
+      }>('Runtime.callFunctionOn', {
+        objectId: object.objectId,
+        functionDeclaration,
+        returnByValue: true,
+        awaitPromise: true,
+      }, undefined, sessionId);
+      if (result.exceptionDetails) {
+        throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text ?? 'Element script failed');
+      }
+      return result.result.value;
+    } finally {
+      await this.client.sendCommand('Runtime.releaseObject', { objectId: object.objectId }, undefined, sessionId).catch(() => {});
+    }
   }
 
   async getElementState(node: EnhancedDOMTreeNode): Promise<{ connected: boolean; disabled: boolean; readOnly: boolean; value: string }> {
@@ -991,6 +1223,7 @@ export class DomService {
     action: InteractionRecord['action'],
     renderedLine?: string,
     params?: Record<string, unknown>,
+    frameId = "main",
   ): void {
     // Press timestamp to find recent visits or create snapshots and attach this interactive session to them.
     let latest: DomSnapshot | undefined;
@@ -1006,6 +1239,7 @@ export class DomService {
     }
     latest.interactions.push({
       backendNodeId,
+      frameId,
       action,
       renderedLine,
       params,
@@ -1014,17 +1248,17 @@ export class DomService {
   }
 
   /**
-   * Summarizes the interactive records of all cache snapshots and groups them by backendNodeId.
+   * Groups cached interactions by owning frame and backendNodeId.
    */
-  private collectInteractions(): Map<number, InteractionRecord[]> {
-    const map = new Map<number, InteractionRecord[]>();
+  private collectInteractions(): Map<string, InteractionRecord[]> {
+    const map = new Map<string, InteractionRecord[]>();
     for (const snapshot of this.cache.values()) {
       if (!snapshot.interactions) continue;
       for (const record of snapshot.interactions) {
-        let list = map.get(record.backendNodeId);
+        let list = map.get(`${record.frameId ?? "main"}:${record.backendNodeId}`);
         if (!list) {
           list = [];
-          map.set(record.backendNodeId, list);
+          map.set(`${record.frameId ?? "main"}:${record.backendNodeId}`, list);
         }
         list.push(record);
       }
@@ -1142,7 +1376,7 @@ export class DomService {
   async extractCurrentDomTree(
     options?: ComputeRenderInfoOptions,
   ): Promise<EnhancedDOMTreeNode> {
-    const root = await this.buildTree();
+    const root = await this.buildTree(options?.fullAX);
     await computeRenderInfo(root, this.client, options, this.oopifManager);
     return root;
   }
@@ -1169,13 +1403,14 @@ export class DomService {
     pruneTree(rootForRender, lookup);
 
     // Distributes the highlightIndex used in the model and returns it to the original domTree by lookup.
+    this.settleMonitor.suspend();
     const selectorMap = await assignAndHighlight(
       rootForRender,
       this.client,
       this.oopifManager,
       lookup,
       { highlight: options?.highlight },
-    );
+    ).finally(() => this.settleMonitor.resume());
 
     // After the cropping is completed, create a scrolling container map for the elements in the extended view.
     const scrollContainerMap = buildScrollContainerMap(rootForRender, lookup);
@@ -1283,6 +1518,12 @@ export class DomService {
    * Compare two caches DOM with a snapshot and create a difference tree.
    * returns null when the snapshot is missing, or origin is different and can be considered different pages.
    */
+  renderMarkdown(domTree: EnhancedDOMTreeNode): string {
+    const { copy } = copyDomTree(domTree);
+    pruneForMarkdown(copy);
+    return renderToMarkdown(copy);
+  }
+
   getDiffTree(
     oldDomId: string,
     newDomId: string,
@@ -1307,6 +1548,7 @@ export class DomService {
   getDiffStats(
     oldDomId: string,
     newDomId: string,
+    precomputed?: EnhancedDOMTreeNode | null,
   ): {
     added: number;
     removed: number;
@@ -1315,7 +1557,7 @@ export class DomService {
   } | null {
     const oldSnapshot = this.cache.get(oldDomId);
     const newSnapshot = this.cache.get(newDomId);
-    const diffTree = this.getDiffTree(oldDomId, newDomId);
+    const diffTree = precomputed === undefined ? this.getDiffTree(oldDomId, newDomId) : precomputed;
     if (!diffTree || !oldSnapshot || !newSnapshot) return null;
 
     // Statistics are preceded by presentation rules that allow differences to reflect the elements actually visible in the model.
@@ -1352,7 +1594,7 @@ export class DomService {
    * form values, then collect CDP data from the main frame and OOPIFs before building the tree.
    * Preserve this order so cross-origin iframe data is complete and current when serialized.
    */
-  private async buildTree(): Promise<EnhancedDOMTreeNode> {
+  private async buildTree(fullAX = false): Promise<EnhancedDOMTreeNode> {
     await this.settleReady;
     // OOPIF session to enable the stability monitor to include its network activity in the waiting conditions.
     await this.oopifManager.discoverOOPIFs(this.client);
@@ -1364,6 +1606,7 @@ export class DomService {
     await this.commands.injectInputValues();
 
     const trees = await this.commands.getAllTrees({
+      fullAX,
       oopifManager: this.oopifManager,
     });
 

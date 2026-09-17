@@ -107,6 +107,19 @@ try {
   assert.equal(viewed.artifacts.length, 1)
   assert.equal(savedImages, 1)
 
+  const opened = await tool("browser_new_tab").execute({}, execution("browser_new_tab"))
+  const otherTabId = opened.metadata.tabId
+  const originalTabId = started.browserContext.observation.tabId
+  for (const tabId of [originalTabId, `tab:${otherTabId}`, `[tab:${originalTabId}]`]) {
+    const switched = await tool("browser_switch_tab").execute({ tabId }, execution("browser_switch_tab"))
+    assert.equal(switched.status, "success")
+    assert.equal(switched.metadata.tabId, tabId.includes(otherTabId) ? otherTabId : originalTabId)
+  }
+  await assert.rejects(tool("browser_close_tab").execute({ tabIds: [`tab:${otherTabId}`, "tab999"] }, execution("browser_close_tab")), /Tab tab999 not found/)
+  assert.ok(context.browserRuntime.getManager("smoke-session").getTab(otherTabId), "invalid batch must not close valid targets")
+  const closed = await tool("browser_close_tab").execute({ tabIds: [`[tab:${otherTabId}]`] }, execution("browser_close_tab"))
+  assert.equal(closed.status, "success")
+
   process.stdout.write(JSON.stringify({
     status: "success",
     registeredTools: registered.length,
@@ -114,6 +127,8 @@ try {
     scriptSummary: scripted.summary,
     screenshotSummary: viewed.summary,
     persistedImages: savedImages,
+    tabMarkerAliases: true,
+    invalidCloseBatchPreserved: true,
   }, null, 2) + "\n")
 } finally {
   await dispose()

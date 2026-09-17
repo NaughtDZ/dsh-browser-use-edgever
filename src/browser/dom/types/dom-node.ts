@@ -62,6 +62,8 @@ export interface EnhancedDOMTreeNode {
   // Identity information (required)
   nodeId: number;
   backendNodeId: number;
+  /** Hit-test targets for ::before/::after belong to their originating element. */
+  pseudoElementIds?: number[];
   nodeType: NodeType;
   nodeName: string;
   nodeValue: string;
@@ -178,6 +180,7 @@ interface RenderInfo {
  * Marks in the cache recording the interaction of elements (click/input/select).
  */
 export interface InteractionRecord {
+  frameId?: string;
   backendNodeId: number;
   action: 'click' | 'input' | 'select';
   renderedLine?: string;

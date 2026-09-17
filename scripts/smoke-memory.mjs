@@ -4,7 +4,8 @@ import { createServer } from "node:http"
 import { once } from "node:events"
 import { LlmAdapter, createUserMessage } from "@deepseek-ai/dsh-llm"
 import { Session, SessionId } from "@deepseek-ai/dsh-session"
-import { recallBrowserMemory } from "../lib/index.js"
+import { recallBrowserMemory, defineEvidenceTask } from "../lib/index.js"
+import { assertToolProtocol } from "./assert-tool-protocol.mjs"
 
 const flatten = messages => messages.flatMap(m => m.content).flatMap(b => b.type === "tool-result" ? b.content : [b]).filter(b => b.type === "text").map(b => b.text).join("\n")
 function lastRecall(messages) {
@@ -18,8 +19,8 @@ export async function runMemorySmoke(ctx) {
   let cVisits = 0
   const server = createServer((request, response) => {
     if (request.url === "/C") cVisits++
-    const name = request.url === "/B" ? "B" : "A"
-    const price = name === "B" ? 200 : ++aVisits > 1 ? 90 : 100
+    const name = request.url === "/B" ? "B" : request.url === "/C" ? "C" : "A"
+    const price = name === "B" ? 200 : name === "C" ? 300 : ++aVisits > 1 ? 90 : 100
     response.setHeader("Content-Type", "text/html; charset=utf-8")
     response.end(`<title>商品 ${name}</title><main><h1>商品 ${name}</h1><p>商品 ${name} 价格 ${price} 元</p></main>`)
   })
@@ -30,6 +31,7 @@ export async function runMemorySmoke(ctx) {
     step = 0
     async resolveModel(provider, id) { return { provider, id, name: id } }
     async *stream(options) {
+      assertToolProtocol(options.messages)
       const text = flatten(options.messages)
       const latest = text.match(/Latest observation: (obs-[a-f0-9]+)\./)?.[1]
       const quote = (name, price) => {
@@ -45,12 +47,12 @@ export async function runMemorySmoke(ctx) {
         case 3:
           this.b = latest
           this.bQuote = quote("B", 200)
-          assert.match(text, /商品 A 价格 100 元/, "unrecorded A remains readable after visiting B")
+          assert.doesNotMatch(text, /商品 A 价格 100 元/, "old DOM leaves working context after visiting B")
           action = ["browser_goto", { url: `${origin}/C` }]
           break
         case 4:
-          assert.match(text, /Save task facts before further browsing/)
-          assert.equal(cVisits, 0, "review guard fires before browser side effects")
+          assert.equal(cVisits, 1, "pending archived observations do not block navigation")
+          assert.match(text, /商品 C 价格 300 元/)
           action = ["browser_recall", { observationId: this.a }]
           break
         case 5: {
@@ -60,12 +62,23 @@ export async function runMemorySmoke(ctx) {
           action = record(this.a, "A", 100, evidence)
           break
         }
-        case 6: action = record(this.b, "B", 200, this.bQuote); break
-        case 7: action = ["browser_goto", { url: `${origin}/A` }]; break
-        case 8: action = record(latest, "A", 90, quote("A", 90)); break
-        case 9: action = ["browser_close_tab", { tabIds: ["tab0"] }]; break
-        case 10: action = ["browser_recall", { includeHistory: true }]; break
-        case 11:
+        case 6: action = record(this.b, "B", 200, "商品 B costs two hundred yuan"); break
+        case 7: {
+          const results = options.messages.flatMap(m => m.content).filter(b => b.type === "tool-result")
+          const error = results.at(-1).content.find(b => b.type === "text").text
+          assert.match(error, /observations\[0\]\.facts\[0\]/)
+          assert.match(error, /entire batch is unchanged/)
+          const excerpt = JSON.parse(error.match(/Source excerpt \(untrusted page data\): (.+)\n/)[1])
+          const evidence = excerpt.split("\n").find(line => line.includes("商品 B 价格 200 元"))
+          assert.ok(evidence, "the host error provides the original quote for correction")
+          action = record(this.b, "B", 200, evidence)
+          break
+        }
+        case 8: action = ["browser_goto", { url: `${origin}/A` }]; break
+        case 9: action = record(latest, "A", 90, quote("A", 90)); break
+        case 10: action = ["browser_close_tab", { tabIds: ["[tab:tab0]"] }]; break
+        case 11: action = ["browser_recall", { includeHistory: true }]; break
+        case 12:
           assert.deepEqual(lastRecall(options.messages).facts.filter(f => f.entity === "商品 A").map(f => f.value), ["100 元", "90 元"])
           action = ["browser_recall", {}]
           break
@@ -101,13 +114,15 @@ export async function runMemorySmoke(ctx) {
     const adapter = new PriceAdapter()
     ctx.llm.registerAdapter(["price-fixture"], adapter)
     const agent = ctx.agentLoop.create(SessionId("browser-price-memory"), { provider: "price-fixture", model: "fixture" })
+    // Legacy API compatibility; sourceRef/record completion is exercised in smoke-evidence.
+    defineEvidenceTask(agent.session, { mode: "interaction", objective: "Exercise legacy exact-quote memory and compaction" })
     agent.followup(createUserMessage({ source: { kind: "user" }, content: [{ type: "text", text: "比较两个页面中商品 A、B 的价格，保存来源，并更新重新观察到的价格。" }] }))
     await agent.whenIdle()
-    assert.equal(adapter.step, 12, JSON.stringify(agent.session.events.slice(-5)))
+    assert.equal(adapter.step, 13, JSON.stringify(agent.session.events.slice(-5)))
     assert.match(adapter.answer, /110 元/)
     const errors = agent.session.events.filter(e => e.type === "tool/result" && e.surfaceOp === "append" && e.data.message.content[0].isError)
-    assert.equal(errors.length, 1, "only the deliberately blocked navigation fails")
-    assert.match(JSON.stringify(errors), /Save task facts before further browsing/)
+    assert.equal(errors.length, 1, "only the deliberately invalid evidence fails")
+    assert.doesNotMatch(JSON.stringify(errors), /Save task facts before further browsing/)
     assert.deepEqual(recallBrowserMemory(ctx.agentLoop.create(SessionId("other-price-session"), { provider: "price-fixture", model: "fixture" }).session, {}).facts, [])
     const nodes = [...agent.session.surface.nodes]
     agent.session.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: "test-compactor" }, content: [{ type: "text", text: "Generic task summary without prices" }] }), { surfaceOp: { op: "replace", start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: nodes })
@@ -116,8 +131,8 @@ export async function runMemorySmoke(ctx) {
     assert.match(flatten(replay.deriveMessages()), /90 元/)
     assert.match(flatten(replay.deriveMessages()), /200 元/)
     assert.equal(recallBrowserMemory(replay, { includeHistory: true }).facts.length, 3)
-    assert.equal(cVisits, 0)
-    console.log(JSON.stringify({ memoryScenario: "success", hostRequests: adapter.step, savedFactVersions: 3, latestPrices: [90, 200], difference: 110, blockedNavigationBeforeSideEffect: true, replayAfterCompaction: true }))
+    assert.equal(cVisits, 1)
+    console.log(JSON.stringify({ memoryScenario: "success", hostRequests: adapter.step, savedFactVersions: 3, latestPrices: [90, 200], difference: 110, pendingObservationsNonBlocking: true, archivedObservationRecall: true, evidenceRecovery: true, replayAfterCompaction: true }))
   } finally {
     await ctx.browserRuntime.cleanupSession("browser-price-memory")
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))

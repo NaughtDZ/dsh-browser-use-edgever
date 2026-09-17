@@ -10,7 +10,7 @@
 
 ### 支持版本
 
-当前项目处于 `0.1.x` 初始开发阶段，只维护最新版本。在 npm 首次发布前，“最新版本”指当前源码和由它生成的本地 tarball；发布后则指最新的公开 tag 和 npm 包。
+我们当前维护 `0.1.x` 最新版本。在 npm 首次发布前，“最新版本”指当前源码和由它生成的本地 tarball；发布后则指最新的公开 tag 和 npm 包。
 
 | 版本 | 支持状态 |
 |---|---|
@@ -31,7 +31,7 @@
 - 是否涉及恶意页面、恶意提示词、配置篡改或本地攻击者；
 - 建议修复方向（如有）。
 
-维护者会先确认问题是否属于本插件边界，再协调修复、测试和披露。请在修复发布前保持私密。
+我们会先确认问题是否属于本插件边界，再协调修复、测试和披露。请在修复发布前保持私密。
 
 ### 威胁模型
 
@@ -54,7 +54,7 @@
 3. **限制网络范围。** 不要让处理不可信任务的实例访问敏感内网、云元数据端点或管理平面。需要强隔离时使用容器或虚拟机并配置网络策略。
 4. **使用专用浏览器身份。** 不要给 Agent 使用包含个人主账号、支付信息或管理员登录态的浏览器环境。
 5. **高风险动作必须明确授权。** 登录、发送、发布、购买、删除、上传、下载和最终提交需要独立确认和后置条件验证。
-6. **保护产物。** DOM、截图、attachment 和被截断脚本的完整结果都可能敏感；限制 `outputDir` 权限并按需清理。
+6. **保护产物。** DOM、截图、attachment、脚本完整结果、评测 Trace、Judge 输入和 `output/evals/` 中的任务文件都可能敏感；我们限制 `outputDir` 权限、保持 Git 忽略，并按需清理。
 7. **及时更新。** 保持 Chrome/Chromium、Node.js、Puppeteer、DSH 和本插件为受支持版本。
 
 ### 属于本项目的问题
@@ -84,7 +84,7 @@
 
 ### Supported versions
 
-The project is in its initial `0.1.x` development line, and only the latest version is maintained. Before the first npm publication, "latest" means the current source and the local tarball built from it. After publication, it means the newest public tag and npm package.
+We maintain only the latest release in the `0.1.x` development line. Before the first npm publication, "latest" means the current source and the local tarball built from it. After publication, it means the newest public tag and npm package.
 
 | Version | Support |
 |---|---|
@@ -105,7 +105,7 @@ A useful report includes:
 - whether the scenario requires a malicious page, prompt injection, config tampering, or a local attacker;
 - a proposed mitigation, if available.
 
-Maintainers will first determine whether the issue belongs to this plugin's trust boundary, then coordinate a fix, verification, and disclosure. Keep the report private until a fix is released.
+We first determine whether the issue belongs to this plugin's trust boundary, then coordinate a fix, verification, and disclosure. Keep the report private until a fix is released.
 
 ### Threat model
 
@@ -128,7 +128,7 @@ Saved browser facts and raw observations can contain sensitive data in the DSH S
 3. **Restrict network reachability.** Do not let an instance handling untrusted tasks reach sensitive private networks, metadata endpoints, or management planes. Use a container or VM with network policy when strong isolation is required.
 4. **Use a dedicated browser identity.** Do not give the Agent a browser environment containing primary personal accounts, payment data, or administrator sessions.
 5. **Authorize high-risk effects explicitly.** Login, send, publish, purchase, delete, upload, download, and final-submit actions need separate confirmation and postcondition verification.
-6. **Protect artifacts.** DOM output, screenshots, attachments, and complete truncated-script results may be sensitive. Restrict `outputDir` permissions and clean up data when appropriate.
+6. **Protect artifacts.** DOM output, screenshots, attachments, complete script results, evaluation Traces, Judge inputs, and task files under `output/evals/` may be sensitive. We restrict `outputDir` permissions, keep these paths Git-ignored, and clean up data when appropriate.
 7. **Stay current.** Keep Chrome/Chromium, Node.js, Puppeteer, DSH, and this plugin on supported versions.
 
 ### In scope

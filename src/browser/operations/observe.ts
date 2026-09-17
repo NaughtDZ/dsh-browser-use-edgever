@@ -1,3 +1,4 @@
+import { getPageDom } from "../dom-utils.js"
 import { operationError, throwIfBrowserAborted, type BrowserOperation } from "../runtime.js"
 
 export const browserViewElements: BrowserOperation = {
@@ -40,6 +41,19 @@ export const browserViewElements: BrowserOperation = {
           ...(tab.lastDomId ? { imageState: { runtimeId: context.manager.runtimeId, domId: tab.lastDomId, tabId: tab.id } } : {}),
         }
       })
+    }, context.signal)
+  },
+}
+
+/** Explicit observation always establishes a full baseline, without reloading the page. */
+export const browserObserve: BrowserOperation = {
+  id: "browser_observe",
+  description: "Read a fresh full DOM snapshot without navigating or reloading. Use after manual page changes or stale references. format: markdown provides semantic text with the same element markers.",
+  async execute(args, context) {
+    return context.manager.enqueue(async () => {
+      throwIfBrowserAborted(context.signal)
+      const dom = await getPageDom(context.manager, undefined, { forceFull: true, format: args.format === "markdown" ? "markdown" : "html" })
+      return { title: "Observe current page", output: dom.output, observation: dom.observation, metadata: { domId: dom.domId, format: args.format ?? "html" } }
     }, context.signal)
   },
 }

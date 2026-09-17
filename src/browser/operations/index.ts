@@ -1,7 +1,7 @@
 import type { BrowserOperation } from "../runtime.js"
 import { browserClick, browserInput } from "./interactions.js"
 import { browserGoto, browserRefresh, browserRestoreState } from "./navigation.js"
-import { browserViewElements } from "./observe.js"
+import { browserObserve, browserViewElements } from "./observe.js"
 import { browserExecuteScript } from "./script.js"
 import { browserRevealOffscreen, browserScrollNextScreen, browserScrollToPage } from "./scroll.js"
 import { browserStart } from "./start.js"
@@ -23,6 +23,7 @@ export const BROWSER_OPERATIONS: readonly BrowserOperation[] = [
   browserScrollNextScreen,
   browserScrollToPage,
   browserExecuteScript,
+  browserObserve,
   browserViewElements,
   browserWait,
 ]

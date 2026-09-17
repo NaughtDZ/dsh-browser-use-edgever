@@ -11,10 +11,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const fresh = () => Session.create(SessionId("memory-test"))
-function observe(session, name, price, url = `https://shop.test/${name}`) {
+function observe(session, name, price, url = `https://shop.test/${name}`, text = `Product ${name}: ${price} yuan`) {
   const domId = `dom${session.seq}`
   const callId = `call${session.seq}`
-  const text = `Product ${name}: ${price} yuan`
   const observation = { version: 1, runtimeId: "live", tabId: "tab0", domId, mode: "full", output: text, fullOutput: text, url, title: name, capturedAt: "2026-09-08T00:00:00.000Z" }
   session.append("tool/call", { turn: 1, step: 1, callId, name: "browser_goto", arguments: "{}" })
   const event = session.append("tool/result", {
@@ -42,15 +41,15 @@ test("cross-page prices survive DOM retirement with source URLs and exact eviden
   assert.match(messages(s), /200 yuan/)
 })
 
-test("unreviewed old observations remain visible and stop further browsing until reviewed", () => {
+test("unreviewed old observations leave working context but remain recallable", () => {
   const s = fresh()
   const a = observe(s, "A", 100)
   observe(s, "B", 200)
-  browser.prepareBrowserContext(s, "live", undefined, browser.readBrowserMemory(s).reviewed)
-  assert.match(messages(s), /Product A: 100 yuan/)
-  assert.throws(() => browser.guardBrowserMemory(s), /browser_record_facts/)
+  browser.prepareBrowserContext(s, "live")
+  assert.doesNotMatch(messages(s), /Product A: 100 yuan/)
+  assert.equal(browser.recallBrowserMemory(s, { observationId: browser.browserObservationId(a.observation) }).observation.content, a.text)
   browser.recordBrowserFacts(s, { observations: [review(a, "A", 100)] })
-  assert.doesNotThrow(() => browser.guardBrowserMemory(s))
+  assert.equal(browser.recallBrowserMemory(s, {}).facts[0].value, "100 yuan")
 })
 
 test("unsupported quotes, fabricated values and unknown sources fail atomically", () => {
@@ -65,6 +64,67 @@ test("unsupported quotes, fabricated values and unknown sources fail atomically"
     { ...good, facts: [] },
   ]) assert.throws(() => browser.recordBrowserFacts(s, { observations: [good, bad] }))
   assert.equal(s.events.length, before)
+})
+
+test("batch evidence errors identify every invalid fact and provide verbatim recovery context", () => {
+  const s = fresh()
+  const a = observe(s, "A", 100)
+  const good = review(a, "A", 100)
+  const before = s.events.length
+  const bad = { ...good, facts: [
+    { ...good.facts[0], evidence: "A costs one hundred yuan" },
+    { ...good.facts[0], entity: "cheapest product", value: "999 yuan" },
+  ], reason: "This reason must not bypass invalid facts" }
+  assert.throws(() => browser.recordBrowserFacts(s, { observations: [good, bad] }), error => {
+    assert.match(error.message, /2 invalid fact\(s\)/)
+    assert.match(error.message, /observations\[1\]\.facts\[0\].*\.evidence/)
+    assert.match(error.message, /observations\[1\]\.facts\[1\]/)
+    assert.match(error.message, /Missing fields: entity, value/)
+    assert.ok(error.message.includes(JSON.stringify(a.text)))
+    assert.match(error.message, /browser_recall.*"observationId":"obs-/)
+    assert.match(error.message, /entire batch is unchanged/)
+    return true
+  })
+  assert.equal(s.events.length, before)
+  const recalled = browser.recallBrowserMemory(s, { observationId: good.observationId })
+  browser.recordBrowserFacts(s, { observations: [{ ...good, facts: [{ ...good.facts[0], evidence: recalled.observation.content }] }] })
+  assert.equal(browser.readBrowserMemory(s).facts.length, 1)
+})
+
+test("tool fact records defer until results are committed and survive cold replay", () => {
+  const s = fresh()
+  const a = observe(s, "A", 100)
+  const before = s.events.length
+  const contexts = []
+  const result = browser.recordBrowserFacts(s, { observations: [review(a, "A", 100)] }, message => contexts.push(message))
+  assert.equal(result.recordedFacts, 1)
+  assert.equal(s.events.length, before, "tool execution must not insert a user message before its result")
+  assert.equal(contexts.length, 1)
+  s.append("user/message", contexts[0], { surfaceOp: "append" })
+  browser.prepareBrowserMemory(s)
+  const replay = Session.create(s.id, JSON.parse(JSON.stringify(s.events)))
+  assert.equal(browser.recallBrowserMemory(replay, {}).facts[0].value, "100 yuan")
+  assert.equal(browser.readBrowserMemory(replay).reviewed.has(browser.browserObservationId(a.observation)), true)
+  assert.throws(() => browser.recordBrowserFacts(s, { observations: [review(a, "A", 999)] }, message => contexts.push(message)))
+  assert.equal(contexts.length, 1, "invalid batches must not defer a record")
+  browser.recordBrowserFacts(s, { observations: [review(a, "A", 100)] }, message => contexts.push(message))
+  assert.equal(contexts.length, 1, "already committed records remain idempotent")
+})
+
+test("evidence recovery finds late-page values and preserves markup and source boundaries", () => {
+  const s = fresh()
+  const text = "x".repeat(13000) + "\n<h1>Product A</h1>\n<span>100 yuan</span>"
+  const a = observe(s, "A", 100, undefined, text)
+  const good = review(a, "A", 100)
+  good.facts[0].evidence = "Product A: 100 yuan"
+  assert.throws(() => browser.recordBrowserFacts(s, { observations: [good] }), error => {
+    const args = JSON.parse(error.message.match(/browser_recall (\{[^\n]+\})\.\n/)[1])
+    assert.ok(args.offset > 12000)
+    assert.match(browser.recallBrowserMemory(s, args).observation.content, /<span>100 yuan<\/span>/)
+    return true
+  })
+  browser.recordBrowserFacts(s, { observations: [{ ...good, facts: [{ ...good.facts[0], evidence: "<h1>Product A</h1> <span>100 yuan</span>" }] }] })
+  assert.equal(browser.readBrowserMemory(s).facts.length, 1)
 })
 
 test("recording old evidence later cannot overwrite a newer price; history remains queryable", () => {
@@ -108,6 +168,29 @@ test("forgotten observations are readable from the archive; irrelevant reviews a
   assert.equal(browser.readBrowserMemory(s).reviewed.has(id), true)
   assert.deepEqual(browser.recallBrowserMemory(s, {}).facts, [])
   assert.throws(() => browser.recallBrowserMemory(fresh(), { observationId: id }), /Unknown browser observation/)
+})
+
+test("empty fact recording calls direct reads to recall without writing", () => {
+  const s = fresh()
+  const a = observe(s, "A", 100)
+  observe(s, "B", 200)
+  const before = s.events.length
+  assert.throws(() => browser.recordBrowserFacts(s, {}), /browser_recall mode bundles/)
+  assert.equal(s.events.length, before)
+})
+
+test("observation recall limit is a character window independent of fact pagination", () => {
+  const s = fresh()
+  const a = observe(s, "A", 100, undefined, "x".repeat(5000))
+  const id = browser.browserObservationId(a.observation)
+  const first = browser.recallBrowserMemory(s, { observationId: id, limit: 3000 })
+  assert.equal(first.observation.content.length, 3000)
+  assert.equal(first.nextOffset, 3000)
+  const second = browser.recallBrowserMemory(s, { observationId: id, offset: first.nextOffset, limit: 3000 })
+  assert.equal(second.observation.content.length, 2000)
+  assert.equal(second.nextOffset, null)
+  assert.throws(() => browser.recallBrowserMemory(s, { observationId: id, limit: 12001 }), /between 1 and 12000/)
+  assert.throws(() => browser.recallBrowserMemory(s, { limit: 31 }), /between 1 and 30/)
 })
 
 test("memory output is paginated without deleting old facts and rejects invalid paging", () => {

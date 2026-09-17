@@ -72,9 +72,14 @@ try {
   }))
   assert.deepEqual(values, { query: "engineer", agree: true, city: "Berlin", nested: 480, main: 500, shadow: "saved note" })
   assert.equal(restored.metadata.restoration.verified, true)
+  assert.equal(restored.metadata.restoreMethod, "history")
   fixture = html.replace('<input id="query" name="query">', '<input id="query" name="query" readonly>')
+  // Evict the native history entry to exercise the URL fallback against changed server content.
+  await call("browser_goto", { url: url + "other" })
+  await tab.cdpClient.sendCommand("Page.resetNavigationHistory")
   const partial = await call("browser_restore_state", { stateId })
   assert.equal(partial.status, "partial")
+  assert.equal(partial.metadata.restoreMethod, "url")
   assert.ok(partial.metadata.restoration.failed > 0)
   assert.equal(await page.$eval("#query", el => el.value), "", "read-only fields must not be overwritten")
   fixture = html

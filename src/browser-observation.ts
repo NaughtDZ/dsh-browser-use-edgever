@@ -15,6 +15,10 @@ export interface BrowserObservation {
   url?: string
   title?: string
   capturedAt?: string
+  /** Host-generated main-frame visit; survives scrolling and DOM checkpoints. */
+  visitId?: string
+  /** Bounded, untruncated script return captured before the accompanying DOM. */
+  extraction?: unknown
 }
 
 export function browserObservationId(observation: Pick<BrowserObservation, "runtimeId" | "tabId" | "domId">): string {

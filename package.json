@@ -10,13 +10,18 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./diagnostics": {
+      "types": "./lib/diagnostics.d.ts",
+      "default": "./lib/diagnostics.js"
+    }
   },
   "files": [
     "lib",
     "src",
     "scripts",
     "docs",
+    "assets/benchmark",
     "cordis.patch.yml",
     "AGENTS.md",
     "README.md",
@@ -38,11 +43,16 @@
     }
   },
   "scripts": {
+    "eval": "node scripts/eval/run.mjs",
+    "eval:prepare": "node scripts/eval/prepare.mjs",
+    "eval:test": "node --test test/eval.test.mjs test/eval-reliability.test.mjs test/eval-metrics.test.mjs",
+    "eval:smoke": "npm run build && node scripts/eval/smoke.mjs",
     "build": "tsdown",
     "clean": "tsdown --clean",
     "prepack": "npm run build",
     "test": "npm run build && node --test test/*.test.mjs",
-    "test:smoke": "npm run build && node scripts/smoke-browser.mjs && node scripts/smoke-reliability.mjs",
+    "test:smoke": "npm run build && node scripts/smoke-browser.mjs && node scripts/smoke-reliability.mjs && node scripts/smoke-migration.mjs && node scripts/smoke-command-errors.mjs",
+    "dom:regression": "node scripts/dom-regression.mjs",
     "verify:package": "node --test test/package.test.mjs",
     "verify:installed": "node scripts/verify-installed-package.mjs",
     "check": "npm test && npm run verify:installed",
@@ -67,14 +77,14 @@
     "@deepseek-ai/cordis": ">=4.0.1 <5",
     "@deepseek-ai/dsh-agent": "0.1.2-alpha.2",
     "@deepseek-ai/dsh-attachment": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-compaction": "0.1.2-alpha.2",
     "@deepseek-ai/dsh-llm": "0.1.2-alpha.2",
     "@deepseek-ai/dsh-session": "0.1.2-alpha.2",
     "@deepseek-ai/dsh-system-prompt": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-token-meter": "0.1.2-alpha.2",
     "@deepseek-ai/dsh-tools": "0.1.2-alpha.2",
     "@deepseek-ai/dsh-user-approval": "0.1.2-alpha.2",
-    "@deepseek-ai/schemastery": ">=3.18.1 <4",
-    "@deepseek-ai/dsh-token-meter": "0.1.2-alpha.2",
-    "@deepseek-ai/dsh-compaction": "0.1.2-alpha.2"
+    "@deepseek-ai/schemastery": ">=3.18.1 <4"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-attachment": {
@@ -114,6 +124,7 @@
     "@types/node": "24.10.1",
     "semver": "7.8.5",
     "tsdown": "0.22.14",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "yaml": "^2.9.1"
   }
 }

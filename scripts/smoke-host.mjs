@@ -11,6 +11,8 @@ import ToolRuntime from "@deepseek-ai/dsh-tools"
 import TokenMeter from "@deepseek-ai/dsh-token-meter"
 import * as browserPlugin from "../lib/index.js"
 import { runMemorySmoke } from "./smoke-memory.mjs"
+import { assertToolProtocol } from "./assert-tool-protocol.mjs"
+import { runEvidenceSmoke } from "./smoke-evidence.mjs"
 
 const html = `<title>Host browser test</title><style>p{margin:0;line-height:16px}</style><main>${Array.from({ length: 40 }, (_, i) => `<p>Stable row ${i}</p>`).join("")}<svg width="64" height="32" aria-label="chart"><rect width="64" height="32" fill="navy"/></svg></main>`
 const url = `data:text/html,${encodeURIComponent(html)}`
@@ -34,6 +36,7 @@ class ScriptedAdapter extends LlmAdapter {
   constructor(script = actions) { super(); this.script = script }
   async resolveModel(provider, id) { return { provider, id, name: id } }
   async *stream(options) {
+    assertToolProtocol(options.messages)
     this.totalRequests++
     const latest = JSON.stringify(options.messages).match(/Latest observation: (obs-[a-f0-9]+)\./)?.[1]
     let action
@@ -84,6 +87,7 @@ try {
   await browserFiber
   disposeBrowser = () => browserFiber.dispose()
   const agent = ctx.agentLoop.create(SessionId("host-browser-smoke"), { provider: "fixture", model: "fixture" })
+  browserPlugin.defineEvidenceTask(agent.session, { mode: "interaction", objective: "Exercise browser mechanics and legacy memory compatibility" })
   agent.followup(createUserMessage({ source: { kind: "user" }, content: [{ type: "text", text: "Inspect the local fixture and preserve extracted facts." }] }))
   await agent.whenIdle()
   assert.equal(adapter.requests.length, actions.length + 1, JSON.stringify(agent.session.events.slice(-4)))
@@ -116,6 +120,7 @@ try {
   const otherAdapter = new ScriptedAdapter([["browser_start", { url: "data:text/html,<title>Independent session</title><h1>Other agent</h1>" }]])
   ctx.llm.registerAdapter(["other"], otherAdapter)
   const other = ctx.agentLoop.create(SessionId("host-browser-other"), { provider: "other", model: "fixture" })
+  browserPlugin.defineEvidenceTask(other.session, { mode: "interaction", objective: "Open another isolated browser" })
   other.followup(createUserMessage({ source: { kind: "user" }, content: [{ type: "text", text: "Open the other browser" }] }))
   await other.whenIdle()
   assert.equal(otherAdapter.requests.length, 2)
@@ -124,6 +129,7 @@ try {
   assert.equal(await ctx.browserRuntime.getManager(String(other.id)).getActiveTab().page.title(), "Independent session")
   console.log(JSON.stringify({ status: "success", hostRequests: adapter.totalRequests + otherAdapter.totalRequests, browserOperations: results.length + 1, images: imageCount, replayExact: true, isolatedSessions: true }))
   await runMemorySmoke(ctx)
+  await runEvidenceSmoke(ctx)
 } finally {
   if (disposeBrowser) await disposeBrowser()
   await ctx.fiber.dispose()

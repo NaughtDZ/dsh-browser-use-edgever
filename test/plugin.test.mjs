@@ -2,6 +2,82 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { apply, TOOL_IDS } from "../lib/index.js"
 import { Session, SessionId } from "@deepseek-ai/dsh-session"
+import { createUserMessage } from "@deepseek-ai/dsh-llm"
+
+test("pending archived observations do not block later browser actions", async () => {
+  const { context, registered } = harnessContext()
+  const dispose = apply(context, { approvalMode: "off", headless: true })
+  try {
+    const exec = execution("browser_wait")
+    const session = exec.agent.session
+    for (let i = 0; i < 2; i++) {
+      const callId = `observed-${i}`
+      const observation = { version: 1, runtimeId: "live", tabId: "tab0", domId: `dom${i}`, mode: "full", output: "page", fullOutput: "page" }
+      session.append("tool/call", { turn: 1, step: 1, callId, name: "browser_goto", arguments: "{}" })
+      session.append("tool/result", { turn: 1, step: 1, meta: { browserContext: { version: 1, observation } }, message: createUserMessage({ source: { kind: "tool", callId }, content: [{ type: "tool-result", toolCallId: callId, content: [{ type: "text", text: "page" }] }] }) }, { surfaceOp: "append" })
+    }
+    let started = 0
+    context.browserRuntime.getManager = () => ({ ensureStarted() { started++ } })
+    const result = await registered.find(t => t.name === "browser_wait").execute({ seconds: 0 }, exec)
+    assert.equal(result.status, "success")
+    assert.equal(started, 1)
+  } finally { await dispose() }
+})
+
+test("closing tab markers validates every target before closing any tab", async () => {
+  const { context, registered } = harnessContext()
+  const dispose = apply(context, { approvalMode: "off", headless: true })
+  try {
+    const exec = execution("browser_close_tab")
+    const manager = context.browserRuntime.getManager(String(exec.agent.session.id))
+    const closed = []
+    manager.ensureStarted = () => {}
+    manager.enqueue = async fn => fn(() => true)
+    manager.getTab = id => ["tab1", "tab2"].includes(id) ? { id } : undefined
+    manager.listTabs = () => [{ id: "tab1" }, { id: "tab2" }]
+    manager.closeTab = async id => { closed.push(id) }
+    manager.hasActiveTab = () => false
+    const tool = registered.find(t => t.name === "browser_close_tab")
+    await assert.rejects(tool.execute({ tabIds: ["tab:tab1", "tab999"] }, exec), /Tab tab999 not found/)
+    assert.deepEqual(closed, [])
+    const result = await tool.execute({ tabIds: ["tab:tab1", "[tab:tab2]"] }, exec)
+    assert.equal(result.status, "success")
+    assert.deepEqual(closed, ["tab1", "tab2"])
+  } finally { await dispose() }
+})
+
+test("network and closed-browser errors do not recommend stale DOM retries", async () => {
+  const { context, registered } = harnessContext()
+  const dispose = apply(context, { approvalMode: "off", headless: true })
+  try {
+    for (const [cause, expected] of [["net::ERR_CONNECTION_CLOSED", /network failure/], ["Browser was closed", /Call browser_start with the intended URL/]]) {
+      context.browserRuntime.getManager = () => { throw new Error(cause) }
+      await assert.rejects(registered.find(t => t.name === "browser_goto").execute({ url: "https://example.test" }, execution("browser_goto")), error => {
+        assert.match(error.message, expected)
+        assert.doesNotMatch(error.message, /Safe retry:/)
+        return true
+      })
+    }
+  } finally { await dispose() }
+})
+
+test("repeated same-origin network failures stop before accessing Chromium, a new turn can retry", async () => {
+  const { context, registered } = harnessContext()
+  const dispose = apply(context, { approvalMode: "off", headless: true })
+  try {
+    const exec = execution("browser_goto")
+    let attempts = 0
+    context.browserRuntime.getManager = () => { attempts++; throw new Error("net::ERR_CONNECTION_CLOSED") }
+    const tool = registered.find(t => t.name === "browser_goto")
+    for (let i = 0; i < 2; i++) await assert.rejects(tool.execute({ url: "https://example.test/a" }, exec), /network failure/)
+    await assert.rejects(tool.execute({ url: "https://example.test/b" }, exec), /BROWSER_ACCESS_BLOCKED/)
+    assert.equal(attempts, 2)
+    await assert.rejects(tool.execute({ url: "https://other.test/" }, exec), /network failure/)
+    exec.agent.session.append("turn/start", { turn: 2 })
+    await assert.rejects(tool.execute({ url: "https://example.test/a" }, exec), /network failure/)
+    assert.equal(attempts, 4)
+  } finally { await dispose() }
+})
 
 test("missing click targets return an error result instead of success", async () => {
   const { context, registered } = harnessContext()
@@ -126,7 +202,7 @@ test("bundle registers the complete native DSH browser tool set and disposes it"
   const { context, registered, promptSections, listeners } = harnessContext()
   const dispose = apply(context, { approvalMode: "off", headless: true })
   assert.deepEqual(registered.map(tool => tool.name), [...TOOL_IDS])
-  assert.equal(new Set(registered.map(tool => tool.name)).size, 17)
+  assert.equal(new Set(registered.map(tool => tool.name)).size, 20)
   assert.equal(promptSections.length, 1)
   assert.match(promptSections[0].text, /explicitly asks to use a browser/)
   assert.match(promptSections[0].text, /only permitted web-access tools for that entire turn/)
@@ -186,7 +262,7 @@ test("host context policy runs after downstream pre-step work and respects cance
   context.browserRuntime.prepareContext = session => { order.push(session.id) }
   const hook = listeners.get("agent/pre-step")
   const controller = new AbortController()
-  const payload = { agent: { session: { id: "context" } }, signal: controller.signal }
+  const payload = { agent: { session: Session.create(SessionId("context")) }, signal: controller.signal }
   const enter = { kind: "enter" }
   assert.equal(await hook(payload, async () => { order.push("downstream"); return enter }), enter)
   assert.deepEqual(order, ["downstream", "context"])
@@ -245,4 +321,23 @@ test("cancelled memory writes do not append events", async () => {
   await assert.rejects(registered.find(t => t.name === "browser_record_facts").execute({ observations: [] }, exec), /cancelled/)
   assert.equal(exec.agent.session.events.length, before)
   await dispose()
+})
+
+test("completion recovery respects cancellation and removes its hook on unload", async () => {
+  const { context, listeners } = harnessContext()
+  const dispose = apply(context, { approvalMode: "off" })
+  try {
+    const controller = new AbortController()
+    const session = Session.create(SessionId("cancel-evidence"))
+    session.append("tool/call", { turn: 1, step: 1, callId: "browser", name: "browser_start", arguments: "{}" })
+    let injected = 0
+    const payload = { agent: { session, inject() { injected++ } }, turn: 1, signal: controller.signal }
+    const hook = listeners.get("agent/turn-stopping")
+    hook(payload)
+    assert.equal(injected, 1, "missing task requests recovery")
+    controller.abort(new Error("cancelled"))
+    assert.throws(() => hook(payload), /cancelled/)
+    assert.equal(injected, 1, "cancelled turn must not be extended")
+  } finally { await dispose() }
+  assert.equal(listeners.has("agent/turn-stopping"), false)
 })

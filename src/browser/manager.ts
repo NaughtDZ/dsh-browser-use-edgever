@@ -30,6 +30,7 @@ export interface TabState {
   domService: DomService
   lastDomId?: string
   contextDeltas?: number
+  visitId?: string
 }
 
 /** Launch settings resolved once by the DSH plugin and fixed for one Session manager. */
@@ -57,6 +58,18 @@ export class BrowserManager {
 
   /** Bound delta chains with periodic complete observations. */
   get maxContextDeltas(): number { return this.launchConfig.maxContextDeltas }
+
+  /** URL changes only: same-URL DOM edits still require an explicit observation. */
+  detectStateChanges(): Array<{ tabId: string; lastUrl: string; currentUrl: string }> {
+    const changes = []
+    for (const tab of this.tabs.values()) {
+      if (tab.page.isClosed() || !tab.lastDomId) continue
+      const lastUrl = tab.domService.getCachedUrl(tab.lastDomId)
+      const currentUrl = tab.page.url()
+      if (lastUrl && lastUrl !== currentUrl) changes.push({ tabId: tab.id, lastUrl, currentUrl })
+    }
+    return changes
+  }
 
   /** Return true once per DSH Session so the browser usage guide is not repeated on every start. */
   consumeGuide(): boolean {
@@ -121,7 +134,10 @@ export class BrowserManager {
       const cdpSession = await page.createCDPSession()
       const cdpClient = new CDPClient(cdpSession)
       const domService = new DomService(page, cdpClient)
-      const tab: TabState = { id, page, cdpSession, cdpClient, domService }
+      const tab: TabState = { id, page, cdpSession, cdpClient, domService, visitId: randomUUID() }
+      page.on("framenavigated", frame => {
+        if (frame === page.mainFrame()) tab.visitId = randomUUID()
+      })
       this.tabs.set(id, tab)
       return tab
     })()

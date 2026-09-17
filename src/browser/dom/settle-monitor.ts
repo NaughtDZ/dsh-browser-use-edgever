@@ -169,6 +169,11 @@ export interface PageSettleMonitorOptions {
  */
 export class PageSettleMonitor {
   private dirty = true;
+  private suspended = 0;
+
+  /** Ignore only our synchronous DOM annotations; network activity still counts. */
+  suspend(): void { this.suspended++; }
+  resume(): void { if (this.suspended > 0) this.suspended--; }
   private inflightRequests = new Map<string, InflightRequest>();
   private quietTimer: TimerHandle | null = null;
   private cleanWaiters: Array<() => void> = [];
@@ -240,6 +245,7 @@ export class PageSettleMonitor {
     // Target.attachedToTarget for an iframe enables OOPIF monitoring and resets the quiet timer.
 
     if (DOM_MUTATION_EVENTS.has(method)) {
+      if (this.suspended > 0) return;
       this.dirty = true;
       this.resetTimer();
       return;

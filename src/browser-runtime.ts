@@ -3,7 +3,9 @@ import type { Session } from "@deepseek-ai/dsh-session"
 import type { Message } from "@deepseek-ai/dsh-llm"
 import { BrowserManager, type BrowserLaunchConfig } from "./browser/manager.js"
 import { prepareBrowserContext } from "./browser-context.js"
-import { prepareBrowserMemory, readBrowserMemory } from "./browser-memory.js"
+import { prepareBrowserStateNotice } from "./browser-state-notice.js"
+import { prepareBrowserMemory } from "./browser-memory.js"
+import { prepareEvidenceContext } from "./browser-evidence-lifecycle.js"
 
 declare module "@deepseek-ai/cordis" {
   interface Context { browserRuntime: BrowserRuntime }
@@ -27,8 +29,10 @@ export class BrowserRuntime {
 
   prepareContext(session: Session, estimateMessage?: (message: Message) => number) {
     const manager = this.managers.get(String(session.id))
-    const report = prepareBrowserContext(session, manager?.hasActiveTab() ? manager.runtimeId : undefined, estimateMessage, readBrowserMemory(session).reviewed)
+    const report = prepareBrowserContext(session, manager?.hasActiveTab() ? manager.runtimeId : undefined, estimateMessage)
     prepareBrowserMemory(session, estimateMessage)
+    prepareEvidenceContext(session, estimateMessage)
+    prepareBrowserStateNotice(session, manager, estimateMessage)
     return report
   }
 

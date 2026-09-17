@@ -30,7 +30,7 @@ export const browserSwitchTab: BrowserOperation = {
   description: "Switch the active Chromium tab by its DSH browser tab ID.",
   async execute(args, context) {
     context.manager.ensureStarted()
-    const tabId = String(args.tabId)
+    const tabId = normalizeTabId(String(args.tabId))
     return context.manager.enqueue(async (isLast) => {
       const tab = await context.manager.switchTab(tabId)
       const dom = isLast() ? await getPageDom(context.manager) : skippedDomOutput()
@@ -50,8 +50,12 @@ export const browserCloseTab: BrowserOperation = {
   async execute(args, context) {
     context.manager.ensureStarted()
     return context.manager.enqueue(async (isLast) => {
-      const provided = Array.isArray(args.tabIds) ? args.tabIds.map(String) : []
+      const provided = Array.isArray(args.tabIds) ? args.tabIds.map(id => normalizeTabId(String(id))) : []
       const targets = provided.length > 0 ? provided : [context.manager.getActiveTab().id]
+      // Validate the full request before closing anything; typos must not report success.
+      for (const id of targets) {
+        if (!context.manager.getTab(id)) throw new Error(`Tab ${id} not found. Available tab IDs: ${context.manager.listTabs().map(tab => tab.id).join(", ")}`)
+      }
       for (const id of targets) await context.manager.closeTab(id)
       let domOutput = ""
       let observation
@@ -68,4 +72,11 @@ export const browserCloseTab: BrowserOperation = {
       }
     }, context.signal)
   },
+}
+
+function normalizeTabId(value: string): string {
+  const input = value.trim()
+  return /^(?:tab:tab\d+|\[tab:tab\d+\])$/.test(input)
+    ? input.replace(/^\[?tab:(tab\d+)\]?$/, "$1")
+    : input
 }

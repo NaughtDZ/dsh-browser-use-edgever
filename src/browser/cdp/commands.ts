@@ -41,6 +41,7 @@ export class CDPCommands {
     maxIframes?: number;
     timeout?: number;
     oopifManager?: OOPIFManager;
+    fullAX?: boolean;
   }): Promise<TargetAllTrees> {
     const { maxIframes = 100, timeout = 10000, oopifManager } = options ?? {};
 
@@ -48,7 +49,7 @@ export class CDPCommands {
     const [snapshot, domTree, axTree, metrics] = await Promise.all([
       this.captureSnapshot({ timeout }),
       this.getDocument({ timeout }),
-      this.getAccessibilityTreeForAllFrames({ timeout }),
+      options?.fullAX ? this.getAccessibilityTreeForAllFrames({ timeout }) : Promise.resolve({ nodes: [] }),
       this.getLayoutMetrics({ timeout }),
     ]);
 
@@ -71,7 +72,7 @@ export class CDPCommands {
     // If the manager is available and OOPIF (cross-process iframe), the separate tree is added after the main page data.
     if (oopifManager?.hasOOPIFs()) {
       try {
-        result.oopifTrees = await oopifManager.captureAllOOPIFTrees();
+        result.oopifTrees = await oopifManager.captureAllOOPIFTrees(options?.fullAX);
       } catch (error) {
         // OOPIF is additional information: silently allowed to fall back when collection failed, returning to the acquired main page tree.
       }

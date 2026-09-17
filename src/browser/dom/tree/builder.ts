@@ -186,6 +186,9 @@ export class DOMTreeBuilder {
     if (snapshotData) {
       enhancedNode.snapshotNode = snapshotData;
     }
+    if (node.pseudoElements?.length) {
+      enhancedNode.pseudoElementIds = node.pseudoElements.map(pseudo => pseudo.backendNodeId);
+    }
 
     // Write lookup: Support weight removal and subsequent parentNode backfill
     this.enhancedNodeLookup.set(node.nodeId, enhancedNode);

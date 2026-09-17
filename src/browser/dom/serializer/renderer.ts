@@ -106,7 +106,7 @@ interface RenderState {
   currentZone: 'above' | 'below' | 'left' | 'right' | undefined;
   lines: string[];
   /** backendNodeId - > an interactive historical record for labelling elements previously operated by the model. */
-  interactionMap?: Map<number, InteractionRecord[]>;
+  interactionMap?: Map<string, InteractionRecord[]>;
   /** Skip a subtree only when neither it nor any descendant contains a diff. */
   incrementalDiff?: boolean;
 }
@@ -163,14 +163,14 @@ function buildInteractionAnnotation(records: InteractionRecord[]): string {
  * @param node - The root that has been calculated upstream renderInfo, cropped and numbered; null indicates an output empty string
  * @paramdepth - Initial indent depth, general call 0; one tab for each level Arguments
  * @paramlookup - A composite key index of the original DOM tree to write back from the crop copy to the original nodes
- * @paraminteractionMap - Historical interactive records grouped by backendNodeId
+ * @paraminteractionMap - Historical interactions grouped by owning frame and backendNodeId
  * @paramoptions.incrementalDiff - Output only added/removed difference nodes and skip completely undifferentiated subtrees
  */
 export function renderToHtml(
   node: EnhancedDOMTreeNode | null,
   depth = 0,
   lookup?: Map<string, EnhancedDOMTreeNode>,
-  interactionMap?: Map<number, InteractionRecord[]>,
+  interactionMap?: Map<string, InteractionRecord[]>,
   options?: { incrementalDiff?: boolean },
 ): string {
   const state: RenderState = {
@@ -312,7 +312,7 @@ function renderNode(
     // The old record is still considered compatible when it is not renderedLine; this preserves the old data while avoiding mislabelling new content after ID.
     let annotation = '';
     if (renderInfo.isCandidate && state.interactionMap) {
-      const allInteractions = state.interactionMap.get(node.backendNodeId);
+      const allInteractions = state.interactionMap.get(`${node.frameId ?? node.oopifSessionId ?? "main"}:${node.backendNodeId}`);
       if (allInteractions) {
         const currentRendered = renderInfo.renderedLine;
         const matched = allInteractions.filter(

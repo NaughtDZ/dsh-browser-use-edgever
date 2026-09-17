@@ -109,7 +109,7 @@ export const NAME_FROM_CONTENT_ROLES = new Set([
 /**
  * Build enhanced AX node from CDP AX node
  */
-function buildEnhancedAXNode(
+export function buildEnhancedAXNode(
   axNode: import('./cdp').Accessibility.AXNode,
 ): EnhancedAXNode {
   const result: EnhancedAXNode = {

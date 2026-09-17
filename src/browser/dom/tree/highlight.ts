@@ -15,6 +15,10 @@ import { nodeKey } from "../utils/index"
 
 export type DOMSelectorMap = Map<number, EnhancedDOMTreeNode>
 
+// backendNodeId is unique within a renderer, not across OOPIF renderers.
+// Keep stable numeric tool IDs per live CDP client, keyed by owning frame.
+const indexRegistries = new WeakMap<CDPClient, { ids: Map<string, number>; used: Set<number>; next: number }>()
+
 /**
  * Creates a CDP command sender to bind the current node session.
  * You can send a sub-session to a cross-process iframe when oopifSessionId and OOPIFManager is available; otherwise, to the main session.
@@ -53,7 +57,7 @@ export async function assignAndHighlight(
   options?: { highlight?: boolean },
 ): Promise<DOMSelectorMap> {
   // Step 1 always executes the numbering: closing the visual high does not affect the numbering in the model text or the interactive query table.
-  const selectorMap = assignHighlightIndices(root, lookup)
+  const selectorMap = assignHighlightIndices(root, cdpClient, lookup)
   if (options?.highlight !== false) {
     // The 2 step is optional to project the numbering on the real page and to wait for the full end of the current round of cleanup, marking and scripting.
     await highlightElements(selectorMap, cdpClient, oopifManager)
@@ -69,9 +73,15 @@ export async function assignAndHighlight(
  */
 function assignHighlightIndices(
   root: EnhancedDOMTreeNode,
+  client: CDPClient,
   originalLookup?: Map<string, EnhancedDOMTreeNode>,
 ): DOMSelectorMap {
   const selectorMap: DOMSelectorMap = new Map()
+  let registry = indexRegistries.get(client)
+  if (!registry) {
+    registry = { ids: new Map(), used: new Set(), next: 1_000_000_000 }
+    indexRegistries.set(client, registry)
+  }
 
   // The cropping phase has spread over the boundary Shadow DOM/iframe so that only childrenNodes is needed here for the Depth of father and son.
   const visit = (node: EnhancedDOMTreeNode): void => {
@@ -83,7 +93,17 @@ function assignHighlightIndices(
       (!node.renderInfo.expandedViewportPosition || node.renderInfo.diffStatus === "removed")
     ) {
       // Currently achieves the use of backendNodeId keys that also serve as page labels, model numbers and selectorMap and do not create consecutive serial numbers.
-      const id = node.backendNodeId
+      const key = `${node.frameId ?? node.oopifSessionId ?? "main"}:${node.backendNodeId}`
+      let id = registry.ids.get(key)
+      if (id === undefined) {
+        id = node.backendNodeId
+        if (registry.used.has(id)) {
+          while (registry.used.has(registry.next)) registry.next++
+          id = registry.next++
+        }
+        registry.ids.set(key, id)
+        registry.used.add(id)
+      }
       node.renderInfo.highlightIndex = id
       selectorMap.set(id, node)
 

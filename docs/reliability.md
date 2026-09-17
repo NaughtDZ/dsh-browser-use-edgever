@@ -2,9 +2,9 @@
 
 ## 1. 动态页面与虚拟列表
 
-旧逻辑按滚动位置合并“已看范围”，并把屏外 DOM 扩展区当作已观察范围。虚拟列表只渲染屏幕附近的条目，因此跳过扩展区可能遗漏数据。
+我们将“已看范围”绑定到当前 DOM 修订，而不是仅按滚动位置累加。虚拟列表只渲染屏幕附近的条目，因此屏外 DOM 扩展区不能直接当作已观察数据。
 
-现在每次采集后，覆盖计算会检查完整 DOM 内容指纹、页面 URL、真实容器身份和视口/内容尺寸。发生插入、删除、重排、虚拟节点替换或尺寸变化后，不匹配的旧范围不会继续算作已看。容器编号变化时按底层节点身份匹配，避免混用另一个容器的历史。
+每次采集后，我们检查完整 DOM 内容指纹、页面 URL、真实容器身份和视口/内容尺寸。发生插入、删除、重排、虚拟节点替换或尺寸变化后，不匹配的历史范围不再算作已看。容器编号变化时按底层节点身份匹配，避免混用另一个容器的历史。
 
 ```text
 采集当前内容和布局
@@ -16,7 +16,7 @@
 
 `browser_scroll_next_screen` 每次推进实际视口的 80%，保留重叠；不再根据 DOM 扩展比例跳过区域。可见的滚动容器即使没有屏外子节点，也会获得可操作编号。
 
-这是保守的覆盖机制：频繁变化的列表可能反复清空覆盖进度；未加载的服务器数据不会凭空出现在 DOM 中。要求“收集全部条目”时，Agent 仍须保存唯一 ID/链接、去重，并核对加载结束或总条目数。视口覆盖完成不等于所有业务条目已读完。
+我们刻意采用保守覆盖：频繁变化的列表可能反复清空覆盖进度；未加载的服务器数据不会凭空出现在 DOM 中。要求“收集全部条目”时，Agent 仍须保存唯一 ID/链接、去重，并核对加载结束或总条目数。视口覆盖完成不等于所有业务条目已读完。
 
 ## 2. 执行、后置条件与任务完成
 
@@ -38,12 +38,20 @@
 
 没有指定后置条件时，点击只报告已执行且结果未验证。文本已经存在也可能满足条件，因此应选择能代表目标结果的内容；复杂任务仍需核对数量、筛选条件、来源等。此机制不宣称存在通用的自主任务验收器。
 
+### 命令错误与恢复
+
+点击前的命中检查与快照统一将 `::before` / `::after` 伪元素归属到其宿主元素，避免图标按钮被误判为遮挡；来自其他元素的真实遮挡仍拒绝点击。失效或不在当前快照中的编号不会自动改指另一个元素，错误提示要求 `browser_observe` 后选择当前活动标签页的编号。
+
+`browser_execute_script` 在用户函数体与包装代码之间保留换行，末尾 `//` 注释不会吞掉包装代码。页面脚本失败时保留 CDP 返回的异常类型和原因；语法错误应修正脚本，不能通过刷新 DOM 修复。异常文本仍属于不可信页面数据。
+
+`scripts/smoke-command-errors.mjs` 使用本地测试页验证伪元素按钮点击、真实遮挡拒绝、失效编号拒绝、末尾注释与具体脚本异常；该检查包含在 `npm run test:smoke` 中。
+
 ## 3. 精确检查点恢复
 
 每次观察生成独立 ID，例如 `tab0-dom3`、`tab0-dom3.1`、`tab0-dom3.2`。必须使用模型收到的完整 ID；不能省略小数部分去恢复另一时刻。
 
 ```text
-stateId → 查找内存检查点 → 访问原 URL
+stateId → 查找内存检查点 → 有效历史条目优先 / 原 URL 回退
         → 核对地址 → 重新定位并恢复支持的字段
         → 恢复局部与主页面滚动 → 读回验证
         → 返回当前 DOM 和 restoration 报告
@@ -73,12 +81,53 @@ stateId → 查找内存检查点 → 访问原 URL
 | `npm run test:smoke` | 真实 Chromium 基础浏览与可靠性场景。 |
 | `npm run test:host` | 真实 DSH Agent Loop、Chromium、模型请求上下文与事实记忆回归。 |
 
-`scripts/smoke-reliability.mjs` 验证：缺失/遮挡元素、输入截断、成功/失败后置条件、精确版本恢复、只读字段的部分恢复、动态插入后覆盖失效，以及连续读取 60 条虚拟列表数据。测试使用本地页面与确定性工具调用，不代表线上 LLM 能自主完成所有网站任务。
+`scripts/smoke-reliability.mjs` 验证：缺失/遮挡元素、输入截断、成功/失败后置条件、精确版本恢复、只读字段的部分恢复、动态插入后覆盖失效，以及连续读取 60 条虚拟列表数据。我们用本地页面与确定性工具调用验证契约；这不代表线上 LLM 能自主完成所有网站任务。
+
+## 5. 事实记忆与错误恢复
+
+新任务先用 `browser_define_task` 声明字段，再通过 `browser_record_facts.records` 登记 sourceRef。完成时自动重查覆盖，浏览过程不因旧观察未登记而阻断。详见[证据状态模型](evidence.md)。以下原文规则适用于兼容接口 `observations`；旧事实不自动满足新任务的字段覆盖。
+
+`browser_record_facts` 的 `evidence` 必须是对应观察的一段连续原文，保留中间的 DOM 标记（允许空白归一化）；`entity` 和 `value` 都须出现在这段原文中。例如原文为 `Product A: 100 yuan`，可记录 `entity: "Product A"`、`attribute: "price"`、`value: "100 yuan"`、`evidence: "Product A: 100 yuan"`。推断、概述、不同片段的拼接不能作为原文证据。
+
+证据失败时整批不写入。错误会报告无效事实数量、最多前五条的 `observations[i].facts[j]` 位置、缺失字段及有界原文片段，并给出带观察 ID 和字符偏移的 `browser_recall` 参数。先依据原文修正，再重试；原文仍是网页数据，不是指令。只有观察确实没有任务相关信息时，才使用 `facts: []` 和明确的 `reason`；填写 reason 不会跳过非空 facts 的校验。
+
+| 情况 | 恢复方式 |
+|---|---|
+| `browser_record_facts {}` | 返回参数错误，不写入；查询归档请用 `browser_recall {"mode":"bundles"}`。 |
+| `browser_recall` 携带 `observationId` | `offset` 与 `limit` 都按字符计算，`limit` 可为 1–12000；不携带 `observationId` 时仍按 1–30 条事实分页。 |
+| 标签显示为 `[tab:tab1]` | 切换和关闭均接受 `tab1`、`tab:tab1`、`[tab:tab1]`；关闭前检查全部目标，未知 ID 会报错。 |
+| 浏览器已关闭 | 用目标 URL 调用 `browser_start`，使用新返回的元素 ID；旧事实仍可 recall。 |
+| `net::ERR_*` | 检查目标地址或改用可访问来源，不重复尝试同一失败地址；插件不保证外部网站可达。 |
+| 搜索服务 `HTTP 402: Insufficient Balance` | 属于搜索服务账户余额问题，需要处理对应服务账户；浏览器插件修复不能消除此错误。 |
+
+Host 回归包含无效证据提交、按错误中的原文纠正、继续跨页浏览以及压缩后重放；使用确定性模型适配器，不代表已经验证线上模型的自主纠错成功率。
+
+### 事实保存后模型请求报 HTTP 400
+
+事实记录不能在工具执行体中直接追加到会话消息：这会形成 `assistant(tool_use) → user(事实记录) → user(tool_result)`。Anthropic Messages 兼容接口要求工具结果紧随工具调用，普通消息插在中间可能导致参数错误。插件通过宿主的 `exec.deferContext` 提交事实记录，由 Agent Loop 在工具结果之后写入；事实仍使用原来的持久化格式，回放和校验规则不变。宿主回归会检查每次实际传给模型的消息顺序，覆盖事实保存、DOM 裁剪和记忆更新。
+
+已生成的错误会话历史不会因更新插件而自动重排。加载新版插件后，用新任务验证；保留旧日志供定位。HTTP 400 的通用错误本身不能证明所有此类错误都源于这一问题，线上服务仍需复测。
+
+搜索工具 `web_search` 由宿主搜索插件提供，配置独立于聊天模型。聊天使用其他模型供应商并不会自动更换搜索服务；遇到搜索的 HTTP 402，应在宿主的 Web search 插件配置中核对 Endpoint 及对应账户。不要通过浏览器插件更改用户未指定的供应商或凭据。
 
 ## English contract
 
-Coverage is tied to captured DOM content, container identity and dimensions; only actual viewports are merged. Next-screen scrolling advances 80% with overlap. This avoids expanded-region gaps but does not prove that all server-side items have loaded.
+We tie coverage to captured DOM content, container identity, and dimensions; only actual viewports are merged. Next-screen scrolling advances 80% with overlap. This avoids expanded-region gaps but does not prove that all server-side items have loaded.
 
-Expected failures return `error`; incomplete results return `partial`. Click/input may request visible-text and exact-URL postconditions with a five-second deadline. Input values are read back before optional Enter. Successful dispatch, a checked postcondition and overall task completion remain separate claims.
+We return `error` for expected failures and `partial` for incomplete results. Click/input may request visible-text and exact-URL postconditions with a five-second deadline. Input values are read back before optional Enter. Successful dispatch, a checked postcondition, and overall task completion remain separate claims.
 
 Exact checkpoint IDs retain same-URL subversions. Memory-only checkpoints restore supported native fields, details and scrolling, including open shadow roots, and verify the result. Excluded, missing or changed state is reported. Passwords, files, iframe state, arbitrary dialogs and SPA memory are not restored. Run the commands above for regression evidence.
+
+
+## 6. 观察、跨域操作和离线回归
+
+| 能力 | 验证条件 | 不代表什么 |
+|---|---|---|
+| `browser_observe` | 保留当前表单值、刷新 DOM 基线；Markdown 显式使用完整 AX | 不会自动发现尚未加载的数据 |
+| OOPIF 子会话 | 本地不同站点 iframe 中读取实际输入值、执行点击并读回结果 | 主页面快照成功本身不证明子框架可操作 |
+| 旧引用保护 | 页面 URL 改变后，依赖旧元素或容器引用的操作被拒绝，要求 observe | 相同 URL 的人工修改仍需重新观察 |
+| 脚本证据 | JSON-LD 中非可见字段的结果预览经 Session 原文校验后可记录和 recall | 没有把任意脚本输出自动认定为事实 |
+| 原生历史恢复 | 先检查 history entry，失败走 URL；两种路径都恢复并验证支持的状态 | iframe、密码、文件选择和任意 SPA 状态仍不受保证 |
+| CDPTape 回归 | 固定录制输入，比较完整文本和元素编号；缺失请求报错 | 不是实时网页验证，也不是模型任务完成率 |
+
+`scripts/smoke-migration.mjs` 在真实 Chromium 中覆盖上述主流程及局部/完整 AX、结构化数据、重复列表、URL 提醒与离线回放。`npm run test:smoke` 会同时执行基础、可靠性和迁移回归。诊断录制不进入默认 Agent 工具流程；录制数据可能含网页内容，仅用于显式授权的本地诊断。

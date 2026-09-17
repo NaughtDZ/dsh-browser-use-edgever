@@ -8,7 +8,7 @@ The DSH browser plugin controls a real Chromium instance isolated to the current
 - DOM markers \`[N]\` are clickable and \`<N>\` are inputs.
 - Visual markers \`[view:ID]\` can be inspected with \`browser_view_elements\`.
 - Use the container index from \`[container:N]\` with the scroll tools.
-- The host keeps current DOM and required baselines. Save relevant entities, values and exact source quotes with browser_record_facts before observations are retired; browser_recall retrieves saved facts or archived pages. Irrelevant observations require an explicit reason. Pending reviews pause further browsing.
+- The host keeps the current DOM and required baselines while older observations remain recallable from the Session log. For multi-page synthesis, save relevant entities, values and exact source quotes with browser_record_facts before the final answer. Pending archived observations never block browsing.
 - Prefer \`browser_click\` and \`browser_input\`; use \`browser_execute_script\` for targeted inspection.
 - Call \`browser_restore_state\` with the exact versioned stateId to restore supported form and scroll state. Inspect restoration failures and omissions; arbitrary SPA memory is not restored.
 - Scroll coverage is tied to captured DOM content and layout, not a count of all data items. Dynamic changes invalidate old coverage; record item identities when completeness matters.

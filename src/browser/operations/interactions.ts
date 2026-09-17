@@ -67,14 +67,14 @@ export const browserClick: BrowserOperation = {
     return context.manager.enqueue(async (isLast) => {
       const elementData = await getElementDataByIndex(tab, elementIndex, context.signal)
       if (!elementData) {
-        return operationError(`Click [${elementIndex}]`, "element_not_found", `Element [${elementIndex}] not found or not clickable in the current DOM.`)
+        return operationError(`Click [${elementIndex}]`, "element_not_found", `Element [${elementIndex}] not found or not clickable in the current DOM. No click was performed. Call browser_observe and choose a current [N] marker in the active tab; archived observations and removed delta lines are not live targets.`)
       }
       return tab.domService.withClient(async () => {
         const live = await tab.domService.getElementState(elementData.node)
         if (!live.connected || live.disabled) return operationError(`Click [${elementIndex}]`, "element_unavailable", "Element is detached or disabled; refresh the page state before retrying.")
         if (elementData.isSelectOption) {
           await tab.domService.selectOption(elementData.node)
-          tab.domService.recordInteraction(elementData.node.backendNodeId, "select", elementData.renderedLine)
+          tab.domService.recordInteraction(elementData.node.backendNodeId, "select", elementData.renderedLine, undefined, elementData.node.frameId ?? elementData.node.oopifSessionId)
           await waitForBrowserDelay(200, context.signal)
           const verification = await verifyPostconditions(tab.page, args, context.signal)
           const outcome = verification.requested && !verification.verified ? "error" : "success"
@@ -84,14 +84,14 @@ export const browserClick: BrowserOperation = {
           return { title: `Select ${label}`, status: outcome, output: `Selected ${label}${note}${dom.output}`, observation: dom.observation, metadata: { verification, task: "not_evaluated" } }
         }
 
-        const isHit = await tab.domService.hitTestAtPoint(elementData.node)
+        const isHit = await tab.domService.hitTestAtPoint(elementData.node, elementData.rect)
         if (!isHit) {
           return operationError(`Click [${elementIndex}]`, "element_occluded", `Element [${elementIndex}] is occluded by another element. Try closing overlays or scrolling.`)
         }
         const cssX = elementData.rect.x + elementData.rect.width / 2
         const cssY = elementData.rect.y + elementData.rect.height / 2
         await tab.domService.click(cssX, cssY)
-        tab.domService.recordInteraction(elementData.node.backendNodeId, "click", elementData.renderedLine)
+        tab.domService.recordInteraction(elementData.node.backendNodeId, "click", elementData.renderedLine, undefined, elementData.node.frameId ?? elementData.node.oopifSessionId)
         await waitForBrowserDelay(500, context.signal)
         const verification = await verifyPostconditions(tab.page, args, context.signal)
         const outcome = verification.requested && !verification.verified ? "error" : "success"
@@ -116,7 +116,7 @@ export const browserInput: BrowserOperation = {
     return context.manager.enqueue(async (isLast) => {
       const elementData = await getElementDataByIndex(tab, elementIndex, context.signal)
       if (!elementData) {
-        return operationError(`Input [${elementIndex}]`, "element_not_found", `Element [${elementIndex}] not found in the current DOM.`)
+        return operationError(`Input [${elementIndex}]`, "element_not_found", `Element [${elementIndex}] not found in the current DOM. No input was performed. Call browser_observe and choose a current <N> marker in the active tab; archived observations and removed delta lines are not live targets.`)
       }
       if (!elementData.isFill) {
         return operationError(`Input [${elementIndex}]`, "not_input", `Element [${elementIndex}] is not an input element. Use browser_click instead.`)
@@ -127,7 +127,7 @@ export const browserInput: BrowserOperation = {
         if (isValueSettableElement(elementData.node)) {
           await tab.domService.setInputValue(elementData.node, text)
         } else {
-          const isHit = await tab.domService.hitTestAtPoint(elementData.node)
+          const isHit = await tab.domService.hitTestAtPoint(elementData.node, elementData.rect)
           if (!isHit) {
             return operationError(`Input [${elementIndex}]`, "element_occluded", `Element [${elementIndex}] is occluded. Try closing overlays or scrolling.`)
           }
@@ -143,7 +143,7 @@ export const browserInput: BrowserOperation = {
           }
           await tab.page.keyboard.type(text)
         }
-        tab.domService.recordInteraction(elementData.node.backendNodeId, "input", elementData.renderedLine)
+        tab.domService.recordInteraction(elementData.node.backendNodeId, "input", elementData.renderedLine, undefined, elementData.node.frameId ?? elementData.node.oopifSessionId)
         const expectedValue = clear || isValueSettableElement(elementData.node) ? text : before.value + text
         const afterInput = await tab.domService.getElementState(elementData.node)
         const inputValueVerified = afterInput.connected && afterInput.value === expectedValue

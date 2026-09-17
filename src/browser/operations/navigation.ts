@@ -67,7 +67,11 @@ export const browserRestoreState: BrowserOperation = {
           metadata: { errorCode: "checkpoint_unavailable" },
         }
       }
-      const finalUrl = await navigatePage(tab, snapshotUrl, context.signal)
+      const historyRestored = await tab.domService.restoreHistoryEntry(domId, context.signal).catch(() => {
+        context.signal.throwIfAborted()
+        return false
+      })
+      const finalUrl = historyRestored ? tab.page.url() : await navigatePage(tab, snapshotUrl, context.signal)
       const restoration = await restorePageCheckpoint(tab.page, checkpoint, context.signal)
       const dom = isLast() ? await getPageDom(context.manager) : skippedDomOutput()
       return {
@@ -75,7 +79,7 @@ export const browserRestoreState: BrowserOperation = {
         title: `Restore ${stateId}`,
         output: `Restored checkpoint ${stateId} at ${finalUrl}: ${restoration.restored} checks passed, ${restoration.failed} failed, ${restoration.omitted} unsupported or excluded items. ${restoration.verified ? "Captured fields and scroll positions verified." : "Restoration incomplete; inspect the current page."} Arbitrary SPA memory and login state are not restored.${dom.output}`,
         observation: dom.observation,
-        metadata: { url: finalUrl, domId: dom.domId, restoration },
+        metadata: { url: finalUrl, domId: dom.domId, restoration, restoreMethod: historyRestored ? "history" : "url" },
       }
     }, context.signal)
   },
