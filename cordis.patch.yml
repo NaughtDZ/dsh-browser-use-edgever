@@ -4,6 +4,7 @@
     - id: dsh-browser
       name: dsh-browser-plugin
       config:
+        browserChannel: auto
         headless: false
         noSandbox: false
         approvalMode: mutating

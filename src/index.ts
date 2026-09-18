@@ -17,6 +17,7 @@ export { BrowserAccessGuard, detectAccessProblem, accessFailureCount } from "./b
 export const name = "dsh-browser"
 export const inject = ["tools", "systemPrompt", "agents", "sessions"]
 export { BrowserRuntime } from "./browser-runtime.js"
+export { resolveBrowserExecutable, type BrowserChannel } from "./browser/executable.js"
 export { prepareBrowserContext } from "./browser-context.js"
 export { browserObservationId } from "./browser-observation.js"
 export { evidenceBundles, observationRecords, resolveSourceRef, defineEvidenceTask, recordEvidence, checkEvidenceCoverage, taskRecords } from "./browser-evidence.js"
@@ -35,6 +36,7 @@ export const apply = (ctx: Context, config: ConfigInput = {}) => {
   const resolved = resolveConfig(config)
   const runtime = new BrowserRuntime({
     ...(resolved.chromePath ? { executablePath: resolved.chromePath } : {}),
+    channel: resolved.browserChannel,
     headless: resolved.headless,
     noSandbox: resolved.noSandbox,
     viewport: { width: resolved.viewportWidth, height: resolved.viewportHeight },

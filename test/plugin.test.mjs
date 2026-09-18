@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { apply, TOOL_IDS } from "../lib/index.js"
+import { apply, Config as ConfigSchema, TOOL_IDS } from "../lib/index.js"
 import { Session, SessionId } from "@deepseek-ai/dsh-session"
 import { createUserMessage } from "@deepseek-ai/dsh-llm"
 
@@ -253,6 +253,33 @@ test("invalid positive-integer configuration fails during plugin load", () => {
   const { context } = harnessContext()
   assert.throws(() => apply(context, { viewportWidth: 0 }), /viewportWidth must be a positive integer/)
   assert.throws(() => apply(context, { maxContextDeltas: 0 }), /maxContextDeltas must be a positive integer/)
+})
+
+test("the configuration schema accepts every browser channel and defaults to auto", () => {
+  assert.equal(ConfigSchema({}).browserChannel, "auto")
+  for (const channel of ["auto", "chrome", "chromium", "edge"]) {
+    assert.equal(ConfigSchema({ browserChannel: channel }).browserChannel, channel)
+  }
+  assert.throws(() => ConfigSchema({ browserChannel: "firefox" }))
+})
+
+test("browserChannel and chromePath reach the Session launch config", async () => {
+  const { context } = harnessContext()
+  const dispose = apply(context, { browserChannel: "edge" })
+  assert.equal(context.browserRuntime.launchConfig.channel, "edge")
+  assert.equal(context.browserRuntime.launchConfig.executablePath, undefined)
+  await dispose()
+
+  const { context: defaults } = harnessContext()
+  const disposeDefaults = apply(defaults, {})
+  assert.equal(defaults.browserRuntime.launchConfig.channel, "auto")
+  await disposeDefaults()
+
+  const { context: explicit } = harnessContext()
+  const disposeExplicit = apply(explicit, { chromePath: "D:\\Edge\\msedge.exe", browserChannel: "edge" })
+  assert.equal(explicit.browserRuntime.launchConfig.executablePath, "D:\\Edge\\msedge.exe")
+  assert.equal(explicit.browserRuntime.launchConfig.channel, "edge")
+  await disposeExplicit()
 })
 
 test("host context policy runs after downstream pre-step work and respects cancellation and skipped steps", async () => {

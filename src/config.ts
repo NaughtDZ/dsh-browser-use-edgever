@@ -1,10 +1,12 @@
 import z from "@deepseek-ai/schemastery"
+import type { BrowserChannel } from "./browser/executable.js"
 
 type ApprovalMode = "off" | "mutating" | "always"
 
 /** User-configurable browser launch, approval, timeout, and output limits. */
 export interface Config {
   chromePath?: string
+  browserChannel?: BrowserChannel
   headless?: boolean
   noSandbox?: boolean
   approvalMode?: ApprovalMode
@@ -21,6 +23,7 @@ export interface Config {
 /** Cordis configuration schema exported for DSH config validation and defaults. */
 export const Config: z<Config> = z.object({
   chromePath: z.string(),
+  browserChannel: z.union(["auto", "chrome", "chromium", "edge"] as const).default("auto"),
   headless: z.boolean().default(false),
   noSandbox: z.boolean().default(false),
   approvalMode: z.union(["off", "mutating", "always"] as const).default("mutating"),
@@ -36,6 +39,7 @@ export const Config: z<Config> = z.object({
 
 export interface ResolvedConfig {
   chromePath?: string
+  browserChannel: BrowserChannel
   headless: boolean
   noSandbox: boolean
   approvalMode: ApprovalMode
@@ -62,6 +66,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
   const outputDir = config.outputDir?.trim()
   return {
     ...(chromePath ? { chromePath } : {}),
+    browserChannel: config.browserChannel ?? "auto",
     headless: config.headless ?? false,
     noSandbox: config.noSandbox ?? false,
     approvalMode: config.approvalMode ?? "mutating",

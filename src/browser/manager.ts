@@ -6,11 +6,11 @@
  * Maintenance: When changing lifecycle code, verify repeated starts, manual browser closure, tab switching, concurrent sessions, adjacent tests, and public types.
  */
 
-import { existsSync } from "node:fs"
 import { randomUUID } from "node:crypto"
 import type { Browser, Page, CDPSession } from "puppeteer-core"
 import { DomService } from "./dom/service.js"
 import { CDPClient } from "./cdp/client.js"
+import { resolveBrowserExecutable, type BrowserChannel } from "./executable.js"
 
 /**
  * Session-scoped Chromium lifecycle manager.
@@ -36,6 +36,8 @@ export interface TabState {
 /** Launch settings resolved once by the DSH plugin and fixed for one Session manager. */
 export interface BrowserLaunchConfig {
   executablePath?: string
+  /** Browser family to probe when executablePath is absent; resolved by ./executable.ts at first launch. */
+  channel?: BrowserChannel
   headless: boolean
   noSandbox: boolean
   viewport: { width: number; height: number }
@@ -89,7 +91,10 @@ export class BrowserManager {
   private async ensureBrowser(): Promise<Browser> {
     if (!this.browser) {
       const puppeteer = await import("puppeteer-core")
-      const executablePath = this.findChromePath()
+      const executablePath = resolveBrowserExecutable({
+        ...(this.launchConfig.executablePath ? { executablePath: this.launchConfig.executablePath } : {}),
+        ...(this.launchConfig.channel ? { channel: this.launchConfig.channel } : {}),
+      })
       const args = ["--disable-blink-features=AutomationControlled"]
       // Keep Chromium's sandbox enabled by default; disable it only when controlled deployment configuration explicitly requires compatibility mode.
       if (this.launchConfig.noSandbox) {
@@ -143,34 +148,6 @@ export class BrowserManager {
     })()
     this.pageRegistrations.set(page, registration)
     return registration
-  }
-
-  private findChromePath(): string {
-    if (this.launchConfig.executablePath) return this.launchConfig.executablePath
-    if (process.platform === "win32") {
-      const paths = [
-        process.env.CHROME_PATH,
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-        `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
-      ]
-      for (const p of paths) {
-        if (p && existsSync(p)) return p
-      }
-    } else if (process.platform === "darwin") {
-      return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    } else {
-      const paths = [
-        process.env.CHROME_PATH,
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chromium",
-      ]
-      for (const p of paths) {
-        if (p && existsSync(p)) return p
-      }
-    }
-    return "google-chrome"
   }
 
   /**
