@@ -11,7 +11,7 @@ WebVoyager 109 tasks / 3 站点：成功率 88.1%（AllRecipes 88.6%、Apple 85.
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22.19-blue" alt="Node.js >= 22.19">
-  <img src="https://img.shields.io/badge/browser-Chrome%20%7C%20Chromium-blue" alt="Chrome or Chromium">
+  <img src="https://img.shields.io/badge/browser-Chrome%20%7C%20Chromium%20%7C%20Edge-blue" alt="Chrome, Chromium or Edge">
   <img src="https://img.shields.io/badge/tools-20-success" alt="20 browser and evidence tools">
 </p>
 
@@ -25,7 +25,7 @@ WebVoyager 109 tasks / 3 站点：成功率 88.1%（AllRecipes 88.6%、Apple 85.
 
 > 给 DeepSeek Harness 装上真实浏览器：让 Agent 能够打开网页、理解页面、填写表单、管理标签页并完成多步骤任务。
 
-我们将 `dsh-browser-plugin` 作为可独立安装的 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web profile 插件。它直接启动本机 Chrome 或 Chromium，通过 Puppeteer、Chrome DevTools Protocol（CDP）和增量 DOM 快照向 Agent 提供 16 个浏览器操作与 4 个任务证据工具。
+我们将 `dsh-browser-plugin` 作为可独立安装的 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web profile 插件。它直接启动本机 Chrome、Chromium 或 Microsoft Edge，通过 Puppeteer、Chrome DevTools Protocol（CDP）和增量 DOM 快照向 Agent 提供 16 个浏览器操作与 4 个任务证据工具。
 
 本仓库只包含浏览器插件自身的源码，不包含 DeepSeek Harness 源码，也不要求用户克隆 Harness 仓库。
 
@@ -43,7 +43,7 @@ WebVoyager 109 tasks / 3 站点：成功率 88.1%（AllRecipes 88.6%、Apple 85.
 
 ## 核心特性
 
-- **真实 Chromium** — 使用本机 Chrome/Chromium，而不是 HTTP 抓取器或模拟页面。
+- **真实 Chromium** — 使用本机 Chrome、Chromium 或 Microsoft Edge，而不是 HTTP 抓取器或模拟页面。
 - **增量 DOM** — 首次返回完整快照，后续优先返回 `+|` / `-|` 差异，减少重复上下文。
 - **稳定元素引用** — 可点击元素使用 `[N]`，可输入元素使用 `<N>`，视觉元素使用 `[view:ID]`。
 - **Session 隔离** — 每个 DSH Agent 独立拥有浏览器进程、标签页、CDP 会话和 DOM 缓存。
@@ -62,7 +62,7 @@ WebVoyager 109 tasks / 3 站点：成功率 88.1%（AllRecipes 88.6%、Apple 85.
 ### 环境要求
 
 - Node.js `>=22.19`
-- Chrome 或 Chromium
+- Chrome、Chromium 或 Microsoft Edge（已安装其中任意一个）
 - `pnpm`（DSH 的插件安装命令会调用它）
 
 ```powershell
@@ -101,6 +101,19 @@ npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 
 首次使用 `npx` 时可能会下载 npm 发布的 DSH CLI 及其依赖；插件安装会下载本插件及其依赖。两条路径都不会下载 DeepSeek Harness 源码 checkout。
 
+### 从 GitHub 仓库安装（本 fork）
+
+本 fork 把构建产物 `lib/` 一并提交，因此可以直接以 git 依赖安装，不依赖目标机器上有构建环境：
+
+```powershell
+npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add github:NaughtDZ/dsh-browser-use-edgever
+npx @deepseek-ai/dsh@0.1.2-alpha.2 --profile web --dump-config
+```
+
+等价的手工做法：在 `$DSH_HOME/profiles/web/package.json` 的 `dependencies` 里加入 `"dsh-browser-plugin": "github:NaughtDZ/dsh-browser-use-edgever"`，并把 `dsh-browser-plugin` 加进 `dsh.profile.bundles`，然后在该目录执行 `pnpm install`。新装的 bundle 需要重启该 profile 才会加载。
+
+> pnpm 默认阻止 git 依赖的构建脚本，所以 `prepare` 不会执行，产物必须随仓库提交。改动源码后请执行 `npm run build` 并提交 `lib/`，否则从 git 安装到的仍是旧产物。
+
 ## 快速配置（可选）
 
 默认配置可以直接使用。在本地打包前，可以修改本仓库的 [`cordis.patch.yml`](cordis.patch.yml)。安装完成后，把下面的条目合并进 `$DSH_HOME/profiles/web/cordis.patch.yml`（`DSH_HOME` 默认是 `~/.dsh`）已有的 YAML 列表；不要覆盖文件中的其他 profile 条目。该层会覆盖 bundle 默认值。
@@ -110,6 +123,7 @@ DSH 的 profile patch 会替换目标条目的整个 `config`，因此覆盖时�
 ```yaml
 - id: dsh-browser
   config:
+    browserChannel: auto
     headless: true
     noSandbox: false
     approvalMode: mutating
@@ -127,7 +141,8 @@ DSH 的 profile patch 会替换目标条目的整个 `config`，因此覆盖时�
 | 需求 | 配置项 | 默认值 | 常用改法 |
 |---|---|---:|---|
 | 后台无界面运行 | `headless` | `false` | 改为 `true` |
-| 指定浏览器程序 | `chromePath` | 自动探测 | 填入 Chrome/Chromium 绝对路径 |
+| 指定浏览器程序 | `chromePath` | 自动探测 | 填入 Chrome/Chromium/Edge 可执行文件绝对路径 |
+| 切换浏览器品牌 | `browserChannel` | `auto` | `auto`、`chrome`、`chromium` 或 `edge`；只用 Edge 的机器建议显式设为 `edge` |
 | 调整操作审批 | `approvalMode` | `mutating` | `off`、`mutating` 或 `always` |
 | 调整浏览器窗口 | `viewportWidth` / `viewportHeight` | `1280` / `900` | 改为所需正整数 |
 | 限制单次工具时长 | `toolTimeoutMs` | `120000` | 填写正整数毫秒数 |
@@ -137,6 +152,20 @@ DSH 的 profile patch 会替换目标条目的整个 `config`，因此覆盖时�
 | 保存完整脚本结果 | `outputDir` | 系统临时目录 | 填入目标目录绝对路径 |
 
 只有受控容器确有兼容性需要时才应设置 `noSandbox: true`。
+
+### 使用 Microsoft Edge
+
+`browserChannel` 决定探测哪个浏览器家族，`auto` 的探测顺序是 Chrome → Chromium → Edge，因此**只装了 Edge 的机器不需要任何配置**：
+
+- Windows：`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`（Edge 在 x86 与 x64 Windows 上都装在这个 32 位路径）、`C:\Program Files\Microsoft\Edge\Application\msedge.exe`、`%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe`
+- macOS：`/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge`，以及 `~/Applications` 下的同构路径
+- Linux：`/usr/bin/microsoft-edge`、`/usr/bin/microsoft-edge-stable`、`/opt/microsoft/msedge/microsoft-edge`
+
+Chrome 与 Edge 同时存在时 `auto` 优先 Chrome（保持上游行为）。要固定用 Edge，设 `browserChannel: edge`，或把 `chromePath` 直接指向 `msedge.exe`。
+
+路径覆盖的环境变量：`BROWSER_PATH`（任意品牌，优先级最高）、`EDGE_PATH`（仅 Edge）、`CHROME_PATH`（仅 Chrome）。品牌专属变量只在探测该品牌时生效，所以 `browserChannel: edge` 会忽略 `CHROME_PATH`。
+
+Edge 与 Chrome 同为 Chromium 内核，CDP、DOM 快照与全部 `browser_*` 工具链无需区分，启动参数与沙箱策略也一致。上游的 puppeteer-core 只映射 Chrome 的发布通道（没有 `msedge` 通道），因此 Edge 的可执行文件由本插件自行解析后显式传给 Puppeteer。
 
 ## 使用示例
 
@@ -261,7 +290,7 @@ dsh-browser/
 
 ## 运行 WebVoyager 评测
 
-在本仓库根目录打开 PowerShell，要求 Node.js `>=22.19` 和本机 Chrome/Chromium。脚本直接启动真实 DSH AgentLoop 和浏览器，无需先启动 DSH Web 界面。Agent 自动操作网页，独立的 LLM Judge 请求负责评分。
+在本仓库根目录打开 PowerShell，要求 Node.js `>=22.19` 和本机 Chrome/Chromium/Edge。脚本直接启动真实 DSH AgentLoop 和浏览器，无需先启动 DSH Web 界面。Agent 自动操作网页，独立的 LLM Judge 请求负责评分。
 
 ### 1. 安装依赖并构建
 
@@ -377,7 +406,7 @@ Remove-Item Env:DSH_TEST_SESSION_MODULE
 
 > Give DeepSeek Harness a real browser so an Agent can open pages, understand interfaces, fill forms, manage tabs, and complete multi-step tasks.
 
-We build `dsh-browser-plugin` as a standalone [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) plugin for the Web profile. It launches a local Chrome or Chromium instance and exposes 16 browser operations plus four task/evidence tools through Puppeteer, the Chrome DevTools Protocol (CDP), and incremental DOM snapshots.
+We build `dsh-browser-plugin` as a standalone [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) plugin for the Web profile. It launches a local Chrome, Chromium, or Microsoft Edge instance and exposes 16 browser operations plus four task/evidence tools through Puppeteer, the Chrome DevTools Protocol (CDP), and incremental DOM snapshots.
 
 Our completed WebVoyager run covers 109 tasks across three sites: 88.1% overall success (AllRecipes 88.6%, Apple 85.7%, Amazon 89.7%), with 26.7 average tool calls, 167.3 seconds, and an estimated $0.0968 Agent cost per task.
 
@@ -395,7 +424,7 @@ This repository contains only the browser plugin's own source. It neither contai
 
 ## Core features
 
-- **Real Chromium** — Controls local Chrome/Chromium instead of simulating a page or performing an HTTP-only fetch.
+- **Real Chromium** — Controls local Chrome, Chromium, or Microsoft Edge instead of simulating a page or performing an HTTP-only fetch.
 - **Incremental DOM** — Returns a full initial snapshot, then prefers `+|` / `-|` diffs to reduce repeated context.
 - **Stable element references** — Clickable elements use `[N]`, inputs use `<N>`, and visual elements use `[view:ID]`.
 - **Session isolation** — Each DSH Agent owns an independent browser process, tab set, CDP session, and DOM cache.
@@ -414,7 +443,7 @@ This repository contains only the browser plugin's own source. It neither contai
 ### Requirements
 
 - Node.js `>=22.19`
-- Chrome or Chromium
+- Chrome, Chromium, or Microsoft Edge (any one installed)
 - `pnpm` (used by the DSH plugin installation command)
 
 ```powershell
@@ -453,6 +482,19 @@ npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 
 On first use, `npx` may download the published DSH CLI and its dependencies; plugin installation downloads this plugin and its dependencies. Neither path downloads a DeepSeek Harness source checkout.
 
+### Install from the GitHub repository (this fork)
+
+This fork commits the compiled `lib/` directory, so it installs as a plain git dependency and needs no build toolchain on the target machine:
+
+```powershell
+npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add github:NaughtDZ/dsh-browser-use-edgever
+npx @deepseek-ai/dsh@0.1.2-alpha.2 --profile web --dump-config
+```
+
+The manual equivalent: add `"dsh-browser-plugin": "github:NaughtDZ/dsh-browser-use-edgever"` to `dependencies` in `$DSH_HOME/profiles/web/package.json`, add `dsh-browser-plugin` to `dsh.profile.bundles`, then run `pnpm install` in that directory. A newly added bundle loads only after the profile restarts.
+
+> pnpm blocks build scripts of git dependencies, so `prepare` never runs and the artifacts must be committed. After changing source, run `npm run build` and commit `lib/`, otherwise a git install keeps serving stale artifacts.
+
 ## Quick configuration (optional)
 
 The defaults work out of the box. Before packing locally, you can edit this repository's [`cordis.patch.yml`](cordis.patch.yml). After installation, merge the entry below into the existing YAML list in `$DSH_HOME/profiles/web/cordis.patch.yml` (`DSH_HOME` defaults to `~/.dsh`); do not overwrite unrelated profile entries. This user layer overrides the bundle defaults.
@@ -462,6 +504,7 @@ A DSH profile patch replaces the matched entry's entire `config`, so restate eve
 ```yaml
 - id: dsh-browser
   config:
+    browserChannel: auto
     headless: true
     noSandbox: false
     approvalMode: mutating
@@ -479,7 +522,8 @@ Restart DSH after editing, then inspect the effective config with `npx @deepseek
 | Need | Setting | Default | Common change |
 |---|---|---:|---|
 | Run without a visible window | `headless` | `false` | Set to `true` |
-| Select a browser executable | `chromePath` | Auto-detect | Set an absolute Chrome/Chromium path |
+| Select a browser executable | `chromePath` | Auto-detect | Set an absolute Chrome/Chromium/Edge path |
+| Choose the browser family | `browserChannel` | `auto` | `auto`, `chrome`, `chromium`, or `edge`; Edge-only machines should set `edge` explicitly |
 | Change approval behavior | `approvalMode` | `mutating` | `off`, `mutating`, or `always` |
 | Resize the viewport | `viewportWidth` / `viewportHeight` | `1280` / `900` | Set positive integers |
 | Limit one tool call | `toolTimeoutMs` | `120000` | Set positive milliseconds |
@@ -489,6 +533,20 @@ Restart DSH after editing, then inspect the effective config with `npx @deepseek
 | Store complete script results | `outputDir` | System temp directory | Set an absolute directory path |
 
 Set `noSandbox: true` only when a controlled container has a demonstrated compatibility requirement.
+
+### Using Microsoft Edge
+
+`browserChannel` selects which browser family is probed. `auto` probes Chrome, then Chromium, then Edge, so **a machine with only Edge needs no configuration**:
+
+- Windows: `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe` (Edge installs into the 32-bit Program Files path on both x86 and x64 Windows), `C:\Program Files\Microsoft\Edge\Application\msedge.exe`, and `%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe`
+- macOS: `/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge` and the equivalent path under `~/Applications`
+- Linux: `/usr/bin/microsoft-edge`, `/usr/bin/microsoft-edge-stable`, `/opt/microsoft/msedge/microsoft-edge`
+
+When Chrome and Edge are both installed, `auto` prefers Chrome (the upstream behavior). To standardize on Edge, set `browserChannel: edge`, or point `chromePath` straight at `msedge.exe`.
+
+Path overrides: `BROWSER_PATH` (any brand, highest priority), `EDGE_PATH` (Edge only), and `CHROME_PATH` (Chrome only). A brand-specific variable is honored only while that brand is probed, so `browserChannel: edge` ignores `CHROME_PATH`.
+
+Edge shares Chromium's engine, so CDP, DOM snapshots, launch arguments, sandboxing, and every `browser_*` tool behave identically. Upstream puppeteer-core maps only Chrome release channels and has no `msedge` channel, so this plugin resolves the Edge executable itself and passes it to Puppeteer explicitly.
 
 ## Usage examples
 

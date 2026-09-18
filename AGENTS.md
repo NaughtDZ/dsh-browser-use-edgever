@@ -12,6 +12,7 @@ This file is the operating guide for coding agents working in this repository. K
 - `src/tool-schemas.ts`: input and canonical output schemas.
 - `src/config.ts`: public configuration, defaults, and validation.
 - `src/browser/manager.ts`: Chromium, page, tab, and Session lifecycle.
+- `src/browser/executable.ts`: Chrome, Chromium, and Microsoft Edge executable resolution. puppeteer-core maps only Chrome release channels, so Edge install paths are probed here.
 - `src/browser/operations/`: navigation, observation, interaction, scrolling, waiting, tabs, and scripts.
 - `src/browser/cdp/`: CDP clients, OOPIF handling, statistics, and replay tapes.
 - `src/browser/dom/`: snapshots, accessibility data, rendering, diffing, visibility, and element lookup.
