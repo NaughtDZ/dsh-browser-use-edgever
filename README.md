@@ -15,6 +15,10 @@ WebVoyager 109 tasks / 3 站点：成功率 88.1%（AllRecipes 88.6%、Apple 85.
   <img src="https://img.shields.io/badge/tools-20-success" alt="20 browser and evidence tools">
 </p>
 
+> **关于本 fork（NaughtDZ/dsh-browser-use-edgever）** — 这是 [dengpeihua/dsh-browser-use](https://github.com/dengpeihua/dsh-browser-use) 的 fork，只解决一件事：**机器上没有 Chrome**。上游只探测 Chrome/Chromium 的安装路径，找不到就返回 `google-chrome` 交给 Puppeteer 在 PATH 里解析，因此只装了 Edge 的机器一启动就失败。本 fork 增加了 Microsoft Edge 支持（跨平台解析 `msedge` 可执行文件、新增 `browserChannel` 配置项），并把编译产物 `lib/` 一并提交，使插件能作为 `github:` 依赖直接安装运行，目标机器不需要构建环境。工具集、证据契约与评测流程与上游保持一致。
+>
+> **About this fork (NaughtDZ/dsh-browser-use-edgever)** — A fork of [dengpeihua/dsh-browser-use](https://github.com/dengpeihua/dsh-browser-use) that exists for one reason: **machines without Chrome**. Upstream probes only Chrome/Chromium install paths and otherwise returns `google-chrome` for Puppeteer to resolve through `PATH`, so an Edge-only machine fails on the first launch. This fork adds Microsoft Edge support (cross-platform `msedge` resolution plus a `browserChannel` setting) and commits the compiled `lib/`, so the plugin installs as a `github:` dependency and runs without a build step on the target machine. Tools, evidence contracts, and evaluation stay identical to upstream.
+
 <p align="center"><strong><a href="#中文">中文</a> | <a href="#english">English</a></strong></p>
 
 ---
