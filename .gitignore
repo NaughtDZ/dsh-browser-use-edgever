@@ -1,9 +1,12 @@
 node_modules/
-lib/
 coverage/
 output/
 *.tgz
 *.log
+
+# Build output is COMMITTED so that a `github:` dependency installs without
+# running any build script (pnpm blocks git-dep build scripts by default).
+# Rebuild with `npm run build` and commit lib/ after source changes.
 
 .env
 .env.*
