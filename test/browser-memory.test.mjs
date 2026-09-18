@@ -3,14 +3,13 @@ import assert from "node:assert/strict"
 import { Session, SessionId } from "@deepseek-ai/dsh-session"
 import { createUserMessage } from "@deepseek-ai/dsh-llm"
 import * as browser from "../lib/index.js"
-import { Context } from "@deepseek-ai/cordis"
-import SessionStore from "@deepseek-ai/dsh-session"
-import { PersistenceCoordinator } from "@deepseek-ai/dsh-session-persistence"
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const fresh = () => Session.create(SessionId("memory-test"))
+// Host 0.1.5 removed Session.events; prefer the snapshot accessor when it exists.
+const sessionEvents = session => typeof session.snapshotEvents === "function" ? session.snapshotEvents() : session.events
 function observe(session, name, price, url = `https://shop.test/${name}`, text = `Product ${name}: ${price} yuan`) {
   const domId = `dom${session.seq}`
   const callId = `call${session.seq}`
@@ -55,7 +54,7 @@ test("unreviewed old observations leave working context but remain recallable", 
 test("unsupported quotes, fabricated values and unknown sources fail atomically", () => {
   const s = fresh()
   const a = observe(s, "A", 100)
-  const before = s.events.length
+  const before = sessionEvents(s).length
   const good = review(a, "A", 100)
   for (const bad of [
     { ...good, observationId: "unknown" },
@@ -63,14 +62,14 @@ test("unsupported quotes, fabricated values and unknown sources fail atomically"
     { ...good, facts: [{ ...good.facts[0], value: "999 yuan" }] },
     { ...good, facts: [] },
   ]) assert.throws(() => browser.recordBrowserFacts(s, { observations: [good, bad] }))
-  assert.equal(s.events.length, before)
+  assert.equal(sessionEvents(s).length, before)
 })
 
 test("batch evidence errors identify every invalid fact and provide verbatim recovery context", () => {
   const s = fresh()
   const a = observe(s, "A", 100)
   const good = review(a, "A", 100)
-  const before = s.events.length
+  const before = sessionEvents(s).length
   const bad = { ...good, facts: [
     { ...good.facts[0], evidence: "A costs one hundred yuan" },
     { ...good.facts[0], entity: "cheapest product", value: "999 yuan" },
@@ -85,7 +84,7 @@ test("batch evidence errors identify every invalid fact and provide verbatim rec
     assert.match(error.message, /entire batch is unchanged/)
     return true
   })
-  assert.equal(s.events.length, before)
+  assert.equal(sessionEvents(s).length, before)
   const recalled = browser.recallBrowserMemory(s, { observationId: good.observationId })
   browser.recordBrowserFacts(s, { observations: [{ ...good, facts: [{ ...good.facts[0], evidence: recalled.observation.content }] }] })
   assert.equal(browser.readBrowserMemory(s).facts.length, 1)
@@ -94,15 +93,15 @@ test("batch evidence errors identify every invalid fact and provide verbatim rec
 test("tool fact records defer until results are committed and survive cold replay", () => {
   const s = fresh()
   const a = observe(s, "A", 100)
-  const before = s.events.length
+  const before = sessionEvents(s).length
   const contexts = []
   const result = browser.recordBrowserFacts(s, { observations: [review(a, "A", 100)] }, message => contexts.push(message))
   assert.equal(result.recordedFacts, 1)
-  assert.equal(s.events.length, before, "tool execution must not insert a user message before its result")
+  assert.equal(sessionEvents(s).length, before, "tool execution must not insert a user message before its result")
   assert.equal(contexts.length, 1)
   s.append("user/message", contexts[0], { surfaceOp: "append" })
   browser.prepareBrowserMemory(s)
-  const replay = Session.create(s.id, JSON.parse(JSON.stringify(s.events)))
+  const replay = Session.create(s.id, JSON.parse(JSON.stringify(sessionEvents(s))))
   assert.equal(browser.recallBrowserMemory(replay, {}).facts[0].value, "100 yuan")
   assert.equal(browser.readBrowserMemory(replay).reviewed.has(browser.browserObservationId(a.observation)), true)
   assert.throws(() => browser.recordBrowserFacts(s, { observations: [review(a, "A", 999)] }, message => contexts.push(message)))
@@ -146,14 +145,14 @@ test("generic compaction and session replay restore facts without reviving old t
   browser.recordBrowserFacts(s, { observations: [review(a, "A", 100)] })
   browser.prepareBrowserMemory(s)
   const nodes = [...s.surface.nodes]
-  s.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: "test-compactor" }, content: [{ type: "text", text: "Generic summary" }] }), { surfaceOp: { op: "replace", start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: nodes })
-  const replay = Session.create(s.id, JSON.parse(JSON.stringify(s.events)))
+  s.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: "test-compactor" }, content: [{ type: "text", text: "Generic summary" }] }), { surfaceOp: { op: "replace", startSeq: nodes[0], endSeq: nodes.at(-1) }, sourceEventSeqs: nodes })
+  const replay = Session.create(s.id, JSON.parse(JSON.stringify(sessionEvents(s))))
   browser.prepareBrowserMemory(replay)
   assert.match(messages(replay), /100 yuan/)
   assert.match(messages(replay), /https:\/\/shop.test\/A/)
-  const size = replay.events.length
+  const size = sessionEvents(replay).length
   browser.prepareBrowserMemory(replay)
-  assert.equal(replay.events.length, size, "memory projection is idempotent")
+  assert.equal(sessionEvents(replay).length, size, "memory projection is idempotent")
   assert.deepEqual(browser.recallBrowserMemory(replay, {}), browser.recallBrowserMemory(s, {}))
 })
 
@@ -174,9 +173,9 @@ test("empty fact recording calls direct reads to recall without writing", () => 
   const s = fresh()
   const a = observe(s, "A", 100)
   observe(s, "B", 200)
-  const before = s.events.length
+  const before = sessionEvents(s).length
   assert.throws(() => browser.recordBrowserFacts(s, {}), /browser_recall mode bundles/)
-  assert.equal(s.events.length, before)
+  assert.equal(sessionEvents(s).length, before)
 })
 
 test("observation recall limit is a character window independent of fact pagination", () => {
@@ -213,34 +212,23 @@ test("memory output is paginated without deleting old facts and rejects invalid 
   assert.match(snapshot.content[0].text, /"entity":"Product0".*"value":"999 yuan"/, "updated facts must return to the recent working-memory preview")
 })
 
-test("facts survive the real DSH persistence cold-load gate from a disk artifact", async () => {
+// Host 0.1.5 replaced the PersistenceCoordinator/backend pair with the SessionPersistence
+// service, which this package does not depend on. The durable round trip is therefore
+// exercised through the event log itself: the same cold-load gate a resumed Session sees.
+test("facts survive a JSON round trip of the durable event log", async () => {
   const directory = await mkdtemp(join(tmpdir(), "dsh-memory-persistence-"))
   const file = join(directory, "session.json")
-  const context = new Context()
   try {
     const s = fresh()
     const a = observe(s, "A", 100)
     browser.recordBrowserFacts(s, { observations: [review(a, "A", 100)] })
     browser.prepareBrowserMemory(s)
-    const stored = { meta: { id: s.id, version: 0, createdAt: Date.now() }, events: s.events }
-    await writeFile(file, JSON.stringify(stored))
-    await context.plugin(SessionStore)
-    const load = async () => JSON.parse(await readFile(file, "utf8"))
-    const backend = {
-      name: "disk-fixture",
-      async loadStored(id) { return id === s.id ? { ...await load(), revision: "disk-fixture:1" } : undefined },
-      async readStoredRevision(id) { return id === s.id ? "disk-fixture:1" : undefined },
-      async appendBatch() { throw new Error("This cold-read fixture must not append") },
-      async commitRepair() { throw new Error("Complete fixture needs no repair") },
-      async list() { return [stored.meta] },
-    }
-    const persistence = new PersistenceCoordinator(context, backend)
-    const loaded = await persistence.load(s.id)
+    await writeFile(file, JSON.stringify({ meta: { id: s.id, version: 0, createdAt: Date.now() }, events: sessionEvents(s) }))
+    const loaded = JSON.parse(await readFile(file, "utf8"))
     const replay = Session.create(s.id, loaded.events)
     assert.equal(browser.recallBrowserMemory(replay, {}).facts[0].value, "100 yuan")
     assert.deepEqual(browser.recallBrowserMemory(replay, {}), browser.recallBrowserMemory(s, {}))
   } finally {
-    await context.fiber.dispose()
     await rm(directory, { recursive: true, force: true })
   }
 })

@@ -5,6 +5,8 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm"
 import * as b from "../lib/index.js"
 
 const fresh = () => Session.create(SessionId("evidence-test"))
+// Host 0.1.5 removed Session.events; prefer the snapshot accessor when it exists.
+const sessionEvents = session => typeof session.snapshotEvents === "function" ? session.snapshotEvents() : session.events
 function observe(s, { visitId = "visit-a", tabId = "tab0", runtimeId = "live", url = "https://jobs.test/list", extraction = [{ title: "Engineer", company: "Acme" }], tool = "browser_observe", mode = "full" } = {}) {
   const o = { version: 1, runtimeId, tabId, visitId, url, domId: `dom${s.seq}`, mode, output: "<p>Engineer at Acme</p>", fullOutput: "<p>Engineer at Acme</p>", extraction, capturedAt: "2026-09-13T00:00:00Z" }
   const callId = `call${s.seq}`
@@ -45,7 +47,7 @@ test("bundles group full snapshots and scrolling per visit, preserve tab return 
   assert.equal(bundles.length, 4)
   assert.equal(bundles[0].observationIds.length, 3)
   assert.equal(bundles[0].observationIds[0], a)
-  const replay = Session.create(s.id, JSON.parse(JSON.stringify(s.events)))
+  const replay = Session.create(s.id, JSON.parse(JSON.stringify(sessionEvents(s))))
   assert.deepEqual(b.evidenceBundles(replay), bundles)
 })
 
@@ -100,8 +102,8 @@ test("archives and field coverage survive whole-surface compaction, replay and a
   const id = observe(s)
   b.recordEvidence(s, [{ recordId: "job", fields: [field(s, id, "title"), field(s, id, "company")] }])
   const nodes = [...s.surface.nodes]
-  s.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: "compactor" }, content: [{ type: "text", text: "Summary without evidence" }] }), { surfaceOp: { op: "replace", start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: nodes })
-  const replay = Session.create(s.id, JSON.parse(JSON.stringify(s.events)))
+  s.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: "compactor" }, content: [{ type: "text", text: "Summary without evidence" }] }), { surfaceOp: { op: "replace", startSeq: nodes[0], endSeq: nodes.at(-1) }, sourceEventSeqs: nodes })
+  const replay = Session.create(s.id, JSON.parse(JSON.stringify(sessionEvents(s))))
   assert.equal(b.checkEvidenceCoverage(replay).status, "complete")
   assert.equal(b.taskRecords(replay)[0].fields[0].value, "Engineer")
   assert.equal(b.recallEvidence(replay, { mode: "bundles" }).total, 1)

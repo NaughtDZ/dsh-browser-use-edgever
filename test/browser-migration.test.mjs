@@ -136,14 +136,14 @@ test("URL notices are session-scoped, deduplicated, clearable and work with snap
   try {
     const host = new Proxy(first, { get(target, key) {
       if (key === "events") throw new Error("snapshot-only")
-      if (key === "snapshotEvents") return () => first.events
+      if (key === "snapshotEvents") return () => first.snapshotEvents()
       const value = Reflect.get(target, key)
       return typeof value === "function" ? value.bind(target) : value
     } })
     runtime.prepareContext(host)
-    const length = first.events.length
+    const length = first.snapshotEvents().length
     runtime.prepareContext(host)
-    assert.equal(first.events.length, length)
+    assert.equal(first.snapshotEvents().length, length)
     assert.match(JSON.stringify(first.deriveMessages()), /browser_observe/)
     runtime.prepareContext(other)
     assert.doesNotMatch(JSON.stringify(other.deriveMessages()), /Browser URL changed/)

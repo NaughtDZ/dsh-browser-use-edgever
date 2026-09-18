@@ -89,7 +89,7 @@ export function prepareBrowserContext(session: Session, runtimeId?: string, esti
         source: { kind: "plugin", plugin: RECOVERY_SOURCE, form: "snapshot", sections: [{ name: "browser-state", text: recoveryText }] },
         content: [{ type: "text", text: recoveryText }],
       }), existingRecovery ? {
-        surfaceOp: { op: "replace", start: existingRecovery.seq, end: existingRecovery.seq },
+        surfaceOp: { op: "replace", startSeq: existingRecovery.seq, endSeq: existingRecovery.seq },
         sourceEventSeqs: [...new Set([existingRecovery.seq, ...(loggedLatest ? [loggedLatest.seq] : [])])],
       } : { surfaceOp: "append", sourceEventSeqs: [loggedLatest!.seq] })
       if (needsSnapshot) report.recoveredBaselines++
@@ -159,7 +159,7 @@ export function prepareBrowserContext(session: Session, runtimeId?: string, esti
     session.append("tool/result", {
       ...event.data,
       message: { ...event.data.message, content: [{ ...result, content }] },
-    }, { surfaceOp: { op: "replace", start: event.seq, end: event.seq }, sourceEventSeqs: [event.seq] })
+    }, { surfaceOp: { op: "replace", startSeq: event.seq, endSeq: event.seq }, sourceEventSeqs: [event.seq] })
     report.replacedResults++
   }
   return report

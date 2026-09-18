@@ -344,9 +344,9 @@ test("cancelled memory writes do not append events", async () => {
   const controller = new AbortController()
   controller.abort(new Error("cancelled"))
   const exec = execution("browser_record_facts", controller.signal)
-  const before = exec.agent.session.events.length
+  const before = exec.agent.session.snapshotEvents().length
   await assert.rejects(registered.find(t => t.name === "browser_record_facts").execute({ observations: [] }, exec), /cancelled/)
-  assert.equal(exec.agent.session.events.length, before)
+  assert.equal(exec.agent.session.snapshotEvents().length, before)
   await dispose()
 })
 

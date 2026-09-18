@@ -22,5 +22,5 @@ export function prepareBrowserStateNotice(session: Session, manager?: BrowserMan
   session.append("user/message", createUserMessage({
     source: { kind: "plugin", plugin: SOURCE, form: "snapshot", sections: [{ name: "browser-state-change", text }] },
     content: [{ type: "text", text }],
-  }), previous ? { surfaceOp: { op: "replace", start: previous.seq, end: previous.seq }, sourceEventSeqs: [previous.seq] } : { surfaceOp: "append" })
+  }), previous ? { surfaceOp: { op: "replace", startSeq: previous.seq, endSeq: previous.seq }, sourceEventSeqs: [previous.seq] } : { surfaceOp: "append" })
 }

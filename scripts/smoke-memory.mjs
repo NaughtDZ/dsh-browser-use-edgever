@@ -113,20 +113,24 @@ export async function runMemorySmoke(ctx) {
   try {
     const adapter = new PriceAdapter()
     ctx.llm.registerAdapter(["price-fixture"], adapter)
-    const agent = ctx.agentLoop.create(SessionId("browser-price-memory"), { provider: "price-fixture", model: "fixture" })
+    const agent = await ctx.agentLoop.create(SessionId("browser-price-memory"), { provider: "price-fixture", model: "fixture" })
     // Legacy API compatibility; sourceRef/record completion is exercised in smoke-evidence.
     defineEvidenceTask(agent.session, { mode: "interaction", objective: "Exercise legacy exact-quote memory and compaction" })
     agent.followup(createUserMessage({ source: { kind: "user" }, content: [{ type: "text", text: "比较两个页面中商品 A、B 的价格，保存来源，并更新重新观察到的价格。" }] }))
     await agent.whenIdle()
-    assert.equal(adapter.step, 13, JSON.stringify(agent.session.events.slice(-5)))
+    const agentEvents = () => agent.session.snapshotEvents()
+    assert.equal(adapter.step, 13, JSON.stringify(agentEvents().slice(-5)))
     assert.match(adapter.answer, /110 元/)
-    const errors = agent.session.events.filter(e => e.type === "tool/result" && e.surfaceOp === "append" && e.data.message.content[0].isError)
+    const errors = agentEvents().filter(e => e.type === "tool/result" && e.surfaceOp === "append" && e.data.message.content[0].isError)
     assert.equal(errors.length, 1, "only the deliberately invalid evidence fails")
     assert.doesNotMatch(JSON.stringify(errors), /Save task facts before further browsing/)
-    assert.deepEqual(recallBrowserMemory(ctx.agentLoop.create(SessionId("other-price-session"), { provider: "price-fixture", model: "fixture" }).session, {}).facts, [])
-    const nodes = [...agent.session.surface.nodes]
-    agent.session.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: "test-compactor" }, content: [{ type: "text", text: "Generic task summary without prices" }] }), { surfaceOp: { op: "replace", start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: nodes })
-    const replay = Session.create(agent.id, JSON.parse(JSON.stringify(agent.session.events)))
+    const otherSession = (await ctx.agentLoop.create(SessionId("other-price-session"), { provider: "price-fixture", model: "fixture" })).session
+    assert.deepEqual(recallBrowserMemory(otherSession, {}).facts, [])
+    // Host 0.1.5 protects the leading system node, so the simulated external compactor
+    // rewrites every node after it.
+    const nodes = [...agent.session.surface.nodes].slice(1)
+    agent.session.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: "test-compactor" }, content: [{ type: "text", text: "Generic task summary without prices" }] }), { surfaceOp: { op: "replace", startSeq: nodes[0], endSeq: nodes.at(-1) }, sourceEventSeqs: nodes })
+    const replay = Session.create(agent.id, JSON.parse(JSON.stringify(agentEvents())))
     ctx.browserRuntime.prepareContext(replay)
     assert.match(flatten(replay.deriveMessages()), /90 元/)
     assert.match(flatten(replay.deriveMessages()), /200 元/)

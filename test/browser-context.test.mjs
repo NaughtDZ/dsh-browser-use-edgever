@@ -60,7 +60,7 @@ test("snapshot-only host sessions retain browser pruning, recovery and exact rep
   const latest = append(compacted, observation("b"))
   compacted.append("user/message", createUserMessage({
     source: { kind: "plugin", plugin: "compactor" }, content: [{ type: "text", text: "Task facts" }],
-  }), { surfaceOp: { op: "replace", start: latest.seq, end: latest.seq }, sourceEventSeqs: [latest.seq] })
+  }), { surfaceOp: { op: "replace", startSeq: latest.seq, endSeq: latest.seq }, sourceEventSeqs: [latest.seq] })
   assert.equal(prepareBrowserContext(snapshotSession(compacted), "runtime").recoveredBaselines, 1)
   assert.match(texts(compacted), /FULL tab0 b/)
   assert.match(texts(compacted), /Task facts/)
@@ -153,7 +153,7 @@ test("generic host pruning of a baseline or the newest block is repaired from re
     const delta = append(s, observation("b", "incremental", "a"))
     const e = latest ? delta : base
     const result = e.data.message.content[0]
-    s.append("tool/result", { ...e.data, message: { ...e.data.message, content: [{ ...result, content: [{ type: "text", text: "Other host pruner shortened this output" }] }] } }, { surfaceOp: { op: "replace", start: e.seq, end: e.seq }, sourceEventSeqs: [e.seq] })
+    s.append("tool/result", { ...e.data, message: { ...e.data.message, content: [{ ...result, content: [{ type: "text", text: "Other host pruner shortened this output" }] }] } }, { surfaceOp: { op: "replace", startSeq: e.seq, endSeq: e.seq }, sourceEventSeqs: [e.seq] })
     assert.equal(prepareBrowserContext(s, "runtime").recoveredBaselines, 1)
     assert.match(texts(s), /FULL tab0 b/)
     assert.equal(prepareBrowserContext(s, "runtime").replacedResults, 0)
@@ -176,7 +176,7 @@ test("whole-history compaction recovers the latest logged page without resurrect
   const s = fresh()
   const result = append(s, observation("a"))
   s.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: "compactor" }, content: [{ type: "text", text: "Task fact summary" }] }), {
-    surfaceOp: { op: "replace", start: result.seq, end: result.seq }, sourceEventSeqs: [result.seq],
+    surfaceOp: { op: "replace", startSeq: result.seq, endSeq: result.seq }, sourceEventSeqs: [result.seq],
   })
   assert.equal(prepareBrowserContext(s, "runtime").recoveredBaselines, 1)
   assert.match(texts(s), /FULL tab0 a/)

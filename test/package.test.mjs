@@ -62,7 +62,8 @@ test("DSH peers require the verified host surface-replacement contract", () => {
   for (const name of dshPeers) {
     const range = packageJson.peerDependencies[name]
     assert.equal(satisfies("0.1.1-rc.2", range), false, `${name} must not advertise an unverified old host`)
-    assert.equal(satisfies("0.1.2-alpha.2", range), true, `${name} must support the locked host`)
+    assert.equal(satisfies("0.1.2-alpha.2", range), false, `${name} must not advertise the session-format v2 host`)
+    assert.equal(satisfies("0.1.5-rc.2", range), true, `${name} must support the locked host`)
   }
 })
 

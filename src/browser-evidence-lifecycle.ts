@@ -18,14 +18,14 @@ export function prepareEvidenceContext(session: Session, estimate?: (m: Message)
     const event = events[seq]
     if (event?.type !== "user/message" || event.surfaceOp !== "append" || event.data.source.kind !== "plugin" || event.data.source.plugin !== EVIDENCE_EVENT_SOURCE) continue
     price(seq, event.data)
-    session.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: EVIDENCE_EVENT_SOURCE, form: "notice", summary: "Browser evidence stored" }, content: [{ type: "text", text: "[Browser evidence stored; use browser_recall mode records or browser_check_coverage.]" }] }), { surfaceOp: { op: "replace", start: seq, end: seq }, sourceEventSeqs: [seq] })
+    session.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: EVIDENCE_EVENT_SOURCE, form: "notice", summary: "Browser evidence stored" }, content: [{ type: "text", text: "[Browser evidence stored; use browser_recall mode records or browser_check_coverage.]" }] }), { surfaceOp: { op: "replace", startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] })
   }
   if (!events.some(e => e.type === "tool/call" && (BROWSER_TOOL_IDS as readonly string[]).includes(e.data.name)) && !evidenceTask(session)) return
   const text = evidenceSnapshot(session)
   const previous = session.surface.nodes.map(seq => events[seq]).find(e => e?.type === "user/message" && e.data.source.kind === "plugin" && e.data.source.plugin === SNAPSHOT)
   if (previous?.type === "user/message" && previous.data.content[0]?.type === "text" && previous.data.content[0].text === text) return
   if (previous?.type === "user/message") price(previous.seq, previous.data)
-  session.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: SNAPSHOT, form: "snapshot", sections: [{ name: "browser-evidence", text }] }, content: [{ type: "text", text }] }), previous ? { surfaceOp: { op: "replace", start: previous.seq, end: previous.seq }, sourceEventSeqs: [previous.seq] } : { surfaceOp: "append" })
+  session.append("user/message", createUserMessage({ source: { kind: "plugin", plugin: SNAPSHOT, form: "snapshot", sections: [{ name: "browser-evidence", text }] }, content: [{ type: "text", text }] }), previous ? { surfaceOp: { op: "replace", startSeq: previous.seq, endSeq: previous.seq }, sourceEventSeqs: [previous.seq] } : { surfaceOp: "append" })
 }
 
 /** Stop-boundary hook extends the current turn, never blocks a browser action. */
